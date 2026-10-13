@@ -1,7 +1,8 @@
 @echo off
-chcp 65001 >nul
-REM Script para execução via Agendador de Tarefas do Windows (Task Scheduler)
-REM Uso: backup_agendado.bat "NomeDoPerfilOuID"
+setlocal
+cd /d "%~dp0"
+
+REM Script para agendamento via Task Scheduler
 
 if "%~1"=="" (
     echo [ERRO] Informe o nome ou ID do perfil de backup.
