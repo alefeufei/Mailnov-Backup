@@ -48,11 +48,11 @@ function navigateTo(tabId) {
     "tab-dashboard": "Início - Visão Geral do Arquivo",
     "tab-archive": "Arquivar E-mails - Perfis IMAP",
     "tab-search": "Pesquisar E-mails no Arquivo",
-    "tab-browse": "Navegar no Arquivo - Pastas",
+    "tab-browse": "Navegar no Arquivo - Pastas por Conta",
     "tab-export": "Exportar e Migrar E-mails",
     "tab-tools": "Ferramentas & Auditoria de Integridade",
   };
-  document.getElementById("page-title").textContent = titles[tabId] || "MailStore Backup Studio";
+  document.getElementById("page-title").textContent = titles[tabId] || "Mailnov Backup";
 
   // Ações ao abrir abas
   if (tabId === "tab-dashboard") loadDashboardData();
@@ -428,6 +428,7 @@ function toggleAdvancedSearch() {
 
 async function executeSearch() {
   const query = document.getElementById("search-input").value.trim();
+  const accountId = document.getElementById("filter-account") ? document.getElementById("filter-account").value : null;
   const sender = document.getElementById("filter-sender").value.trim();
   const recipient = document.getElementById("filter-recipient").value.trim();
   const subject = document.getElementById("filter-subject").value.trim();
@@ -437,6 +438,7 @@ async function executeSearch() {
 
   const payload = {
     query,
+    account_id: accountId || null,
     sender: sender || null,
     recipient: recipient || null,
     subject: subject || null,
@@ -480,34 +482,132 @@ async function executeSearch() {
   }
 }
 
-// 5. Navegar no Arquivo (Folder Tree)
+// 5. Navegar no Arquivo (Árvore Separada por Perfil)
 async function loadFoldersTree() {
   try {
-    const res = await fetch("/api/folders");
-    const folders = await res.json();
+    const res = await fetch("/api/browse/tree");
+    const tree = await res.json();
     const treeDiv = document.getElementById("folders-tree-list");
 
-    if (!folders || folders.length === 0) {
-      treeDiv.innerHTML = '<div style="color: var(--text-muted); font-size: 12px;">Nenhuma pasta arquivada ainda.</div>';
+    if (!tree || tree.length === 0) {
+      treeDiv.innerHTML = '<div style="color: var(--text-muted); font-size: 12px; padding: 12px;">Nenhuma conta ou pasta arquivada ainda.</div>';
       return;
     }
 
-    treeDiv.innerHTML = folders.map(f => `
-      <div class="tree-node" onclick="selectBrowseFolder('${escapeHtml(f.account_id)}', '${escapeHtml(f.folder_name)}')">
-        <span>📁 ${escapeHtml(f.folder_name)}</span>
-        <span class="badge-count">${f.message_count}</span>
-      </div>
-    `).join("");
+    // Atualiza filtro de contas na busca
+    updateSearchAccountFilter(tree);
+
+    let html = "";
+    tree.forEach((account) => {
+      const hasFolders = account.folders && account.folders.length > 0;
+      const totalMsgs = account.total_messages || 0;
+
+      html += `
+        <div class="profile-tree-group" id="acc-group-${account.account_id}">
+          <div class="profile-tree-header" onclick="selectBrowseProfile('${escapeHtml(account.account_id)}', '${escapeHtml(account.account_name)}', '${escapeHtml(account.username)}')">
+            <span class="profile-toggle-btn" id="toggle-btn-${account.account_id}" onclick="event.stopPropagation(); toggleProfileFolders('${escapeHtml(account.account_id)}')">▼</span>
+            <span style="font-size: 15px;">📬</span>
+            <div class="profile-info">
+              <div class="profile-name" title="${escapeHtml(account.account_name)}">${escapeHtml(account.account_name)}</div>
+              <div class="profile-sub" title="${escapeHtml(account.username)}">${escapeHtml(account.username)}</div>
+            </div>
+            <span class="badge-count" title="Total na conta: ${totalMsgs}">${totalMsgs}</span>
+          </div>
+
+          <div class="profile-folders-container" id="folders-container-${account.account_id}">
+            ${
+              hasFolders
+                ? account.folders
+                    .map(
+                      (f) => `
+              <div class="tree-node sub-folder" id="folder-node-${account.account_id}-${escapeHtml(f.folder_name)}" onclick="event.stopPropagation(); selectBrowseFolder('${escapeHtml(account.account_id)}', '${escapeHtml(account.account_name)}', '${escapeHtml(f.folder_name)}')">
+                <span title="${escapeHtml(f.folder_name)}">📁 ${escapeHtml(f.folder_name)}</span>
+                <span class="badge-count">${f.message_count}</span>
+              </div>
+            `
+                    )
+                    .join("")
+                : '<div style="font-size: 11px; color: var(--text-muted); padding: 6px 12px;">Nenhuma pasta arquivada</div>'
+            }
+          </div>
+        </div>
+      `;
+    });
+
+    treeDiv.innerHTML = html;
   } catch (err) {
-    console.error("Erro ao carregar árvore:", err);
+    console.error("Erro ao carregar árvore por perfil:", err);
   }
 }
 
-async function selectBrowseFolder(accountId, folderName) {
-  document.querySelectorAll(".tree-node").forEach(n => n.classList.remove("active"));
-  if (event && event.currentTarget) event.currentTarget.classList.add("active");
+function updateSearchAccountFilter(tree) {
+  const sel = document.getElementById("filter-account");
+  if (!sel) return;
+  const currentVal = sel.value;
+  sel.innerHTML = '<option value="">Todas as contas</option>' +
+    tree.map(a => `<option value="${escapeHtml(a.account_id)}">${escapeHtml(a.account_name)} (${escapeHtml(a.username)})</option>`).join("");
+  if (currentVal) sel.value = currentVal;
+}
 
-  document.getElementById("browse-folder-header").firstElementChild.textContent = `📁 ${folderName}`;
+function toggleProfileFolders(accountId) {
+  const container = document.getElementById(`folders-container-${accountId}`);
+  const btn = document.getElementById(`toggle-btn-${accountId}`);
+  if (container) container.classList.toggle("collapsed");
+  if (btn) btn.classList.toggle("collapsed");
+}
+
+function clearTreeActiveSelection() {
+  document.querySelectorAll(".profile-tree-header, .tree-node").forEach(n => n.classList.remove("active"));
+}
+
+async function selectBrowseProfile(accountId, accountName, username) {
+  clearTreeActiveSelection();
+  const headerElem = document.querySelector(`#acc-group-${accountId} .profile-tree-header`);
+  if (headerElem) headerElem.classList.add("active");
+
+  const badge = document.getElementById("browse-account-badge");
+  if (badge) {
+    badge.style.display = "inline-block";
+    badge.textContent = accountName;
+  }
+
+  const titleElem = document.getElementById("browse-folder-title");
+  if (titleElem) titleElem.textContent = `Todas as pastas (${username})`;
+
+  const tbody = document.getElementById("browse-messages-tbody");
+  tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 30px;">Carregando mensagens da conta...</td></tr>';
+
+  try {
+    const res = await fetch(`/api/messages?account_id=${encodeURIComponent(accountId)}&limit=100`);
+    const data = await res.json();
+
+    document.getElementById("browse-folder-count").textContent = `${data.total} mensagens`;
+
+    if (!data.items || data.items.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 30px;">Esta conta ainda não possui mensagens arquivadas.</td></tr>';
+      return;
+    }
+
+    renderBrowseMessages(data.items);
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color: var(--danger); text-align: center;">Erro: ${err.message}</td></tr>`;
+  }
+}
+
+async function selectBrowseFolder(accountId, accountName, folderName) {
+  clearTreeActiveSelection();
+  const node = document.getElementById(`folder-node-${accountId}-${folderName}`);
+  if (node) node.classList.add("active");
+
+  const badge = document.getElementById("browse-account-badge");
+  if (badge) {
+    badge.style.display = "inline-block";
+    badge.textContent = accountName;
+  }
+
+  const titleElem = document.getElementById("browse-folder-title");
+  if (titleElem) titleElem.textContent = `📁 ${folderName}`;
+
   const tbody = document.getElementById("browse-messages-tbody");
   tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 30px;">Carregando mensagens da pasta...</td></tr>';
 
@@ -522,18 +622,23 @@ async function selectBrowseFolder(accountId, folderName) {
       return;
     }
 
-    tbody.innerHTML = data.items.map(m => `
-      <tr onclick="openEmailViewer(${m.id})">
-        <td style="text-align: center;">${m.has_attachments ? '📎' : ''}</td>
-        <td>${formatDate(m.date_sent)}</td>
-        <td><strong>${escapeHtml(m.sender)}</strong></td>
-        <td>${escapeHtml(m.subject)}</td>
-        <td>${formatBytes(m.size_bytes)}</td>
-      </tr>
-    `).join("");
+    renderBrowseMessages(data.items);
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="5" style="color: var(--danger); text-align: center;">Erro: ${err.message}</td></tr>`;
   }
+}
+
+function renderBrowseMessages(items) {
+  const tbody = document.getElementById("browse-messages-tbody");
+  tbody.innerHTML = items.map(m => `
+    <tr onclick="openEmailViewer(${m.id})">
+      <td style="text-align: center;">${m.has_attachments ? '📎' : ''}</td>
+      <td>${formatDate(m.date_sent)}</td>
+      <td><strong>${escapeHtml(m.sender)}</strong></td>
+      <td>${escapeHtml(m.subject)}</td>
+      <td>${formatBytes(m.size_bytes)}</td>
+    </tr>
+  `).join("");
 }
 
 // 6. Visualizador de Mensagem

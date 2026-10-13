@@ -36,7 +36,7 @@ from mailstore.verifier import ArchiveVerifier
 
 # Instância FastAPI
 app = FastAPI(
-    title="MailStore Backup Studio",
+    title="Mailnov Backup",
     description="Sistema profissional de arquivamento, backup e migração de e-mails IMAP",
     version="1.0.0"
 )
@@ -216,10 +216,15 @@ def cancel_backup(profile_id: str):
 
 
 # --- Pastas e Mensagens ---
-
+ 
 @app.get("/api/folders")
 def get_folders(account_id: Optional[str] = None):
     return db.get_folders(account_id)
+
+
+@app.get("/api/browse/tree")
+def get_browse_tree():
+    return db.get_browse_tree()
 
 
 @app.get("/api/messages")
@@ -463,4 +468,4 @@ if WEB_DIR.exists():
         index_file = WEB_DIR / "index.html"
         if index_file.exists():
             return HTMLResponse(content=index_file.read_text(encoding="utf-8"))
-        return HTMLResponse("<h1>MailStore Backup Studio</h1><p>Frontend não encontrado.</p>")
+        return HTMLResponse("<h1>Mailnov Backup</h1><p>Frontend não encontrado.</p>")

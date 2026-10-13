@@ -27,7 +27,7 @@ def run_app():
         port = find_free_port(8000)
         url = f"http://127.0.0.1:{port}"
         print("=" * 60)
-        print(" MailStore Backup Studio - Inicializando...")
+        print(" Mailnov Backup - Inicializando...")
         print(f" Interface Web: {url}")
         print(f" Repositorio Local: {BASE_DIR}")
         print("=" * 60)

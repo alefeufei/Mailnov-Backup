@@ -1,6 +1,6 @@
-# MailStore Backup Studio
+# Mailnov Backup
 
-Sistema completo e profissional para **backup, arquivamento incremental, pesquisa e exportação/migração de e-mails IMAP**, inspirado na experiência do **[MailStore Home](https://help.mailstore.com/en/home/MailStore_Home_Help)**.
+Sistema completo e profissional para **backup, arquivamento incremental, pesquisa e exportação/migração de e-mails IMAP**, inspirado na experiência do MailStore Home.
 
 Permite arquivar caixas postais inteiras de qualquer provedor IMAP (Gmail, Outlook/Office 365, Yahoo, iCloud, Fastmail, cPanel, servidores corporativos), pesquisar instantaneamente mensagens com anexos, e exportar tudo de volta para outro servidor IMAP ou diretamente para arquivos **PST do Microsoft Outlook (.pst)**, pastas de **.EML** ou arquivos **.MBOX**.
 

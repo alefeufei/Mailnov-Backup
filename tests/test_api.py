@@ -83,6 +83,12 @@ class TestRestApi(unittest.TestCase):
         self.assertIn("success", data)
         self.assertNotIn("'TestConnectionRequest' object has no attribute 'timeout'", data.get("message", ""))
 
+    def test_browse_tree_endpoint(self):
+        res = self.client.get("/api/browse/tree")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIsInstance(data, list)
+
 
 if __name__ == "__main__":
     unittest.main()

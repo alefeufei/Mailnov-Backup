@@ -24,7 +24,7 @@ from mailstore.verifier import ArchiveVerifier
 
 def main():
     parser = argparse.ArgumentParser(
-        description="MailStore Backup CLI - Backup de e-mails IMAP e exportação para IMAP/PST/EML/MBOX"
+        description="Mailnov Backup CLI - Backup de e-mails IMAP e exportação para IMAP/PST/EML/MBOX"
     )
     subparsers = parser.add_subparsers(dest="command", help="Comandos disponíveis")
 
@@ -101,7 +101,7 @@ def main():
     if args.command == "server":
         import uvicorn
         url = f"http://{args.host}:{args.port}"
-        print(f"=== MailStore Backup Studio ===")
+        print(f"=== Mailnov Backup ===")
         print(f"Servidor iniciado em: {url}")
         print(f"Diretório de dados: {BASE_DIR}")
         if args.open_browser:

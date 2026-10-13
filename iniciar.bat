@@ -1,9 +1,9 @@
 @echo off
 cd /d "%~dp0"
-title MailStore Backup Studio
+title Mailnov Backup
 
 echo ====================================================
-echo         Iniciando MailStore Backup Studio
+echo             Iniciando Mailnov Backup
 echo ====================================================
 echo.
 

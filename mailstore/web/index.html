@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MailStore Backup Studio</title>
+  <title>Mailnov Backup</title>
   <link rel="stylesheet" href="/static/css/app.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
       <div class="sidebar-header">
         <div class="logo-icon">M</div>
         <div>
-          <div class="app-title">MailStore Backup</div>
+          <div class="app-title">Mailnov Backup</div>
           <div class="app-version">Versão 1.0 • Desktop</div>
         </div>
       </div>
@@ -206,6 +206,12 @@
             <div id="search-advanced-filters" style="display: none; padding-top: 14px; border-top: 1px solid var(--border);">
               <div class="form-row">
                 <div class="form-group">
+                  <label class="form-label">Conta / Perfil:</label>
+                  <select id="filter-account" class="form-control">
+                    <option value="">Todas as contas</option>
+                  </select>
+                </div>
+                <div class="form-group">
                   <label class="form-label">De (Remetente):</label>
                   <input type="text" id="filter-sender" class="form-control" placeholder="ex: contato@empresa.com">
                 </div>
@@ -213,12 +219,12 @@
                   <label class="form-label">Para (Destinatário):</label>
                   <input type="text" id="filter-recipient" class="form-control" placeholder="ex: eu@email.com">
                 </div>
+              </div>
+              <div class="form-row">
                 <div class="form-group">
                   <label class="form-label">Assunto:</label>
                   <input type="text" id="filter-subject" class="form-control">
                 </div>
-              </div>
-              <div class="form-row">
                 <div class="form-group">
                   <label class="form-label">Data a partir de:</label>
                   <input type="date" id="filter-date-from" class="form-control">
@@ -264,20 +270,24 @@
         <!-- 4. ABA NAVEGAR NO ARQUIVO (FOLDER TREE) -->
         <section id="tab-browse" class="tab-content">
           <div class="split-view-container">
-            <!-- Árvore de Pastas -->
+            <!-- Árvore de Pastas por Perfil -->
             <div class="tree-sidebar">
-              <div style="font-weight: 600; font-size: 14px; margin-bottom: 10px; color: var(--text-main);">
-                Pastas Arquivadas
+              <div style="font-weight: 600; font-size: 14px; margin-bottom: 12px; color: var(--text-main); display: flex; justify-content: space-between; align-items: center;">
+                <span>Contas & Pastas</span>
+                <button class="btn btn-secondary btn-sm" onclick="loadFoldersTree()" title="Atualizar árvore" style="padding: 2px 7px; font-size: 11px;">🔄</button>
               </div>
               <div id="folders-tree-list">
-                <div style="color: var(--text-muted); font-size: 12px;">Carregando pastas...</div>
+                <div style="color: var(--text-muted); font-size: 12px;">Carregando contas e pastas...</div>
               </div>
             </div>
 
             <!-- Lista de E-mails da Pasta Selecionada -->
             <div class="split-detail-area">
               <div style="padding: 12px 18px; border-bottom: 1px solid var(--border); font-weight: 600; display: flex; justify-content: space-between; align-items: center;" id="browse-folder-header">
-                <span>Selecione uma pasta ao lado</span>
+                <div>
+                  <span id="browse-account-badge" style="display: none; background: var(--primary-light); color: var(--primary); padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-right: 6px; font-weight: 600;"></span>
+                  <span id="browse-folder-title">Selecione uma conta ou pasta ao lado</span>
+                </div>
                 <span id="browse-folder-count" style="font-size: 12px; color: var(--text-muted);"></span>
               </div>
               <div style="flex: 1; overflow-y: auto;">
@@ -384,7 +394,7 @@
                 </div>
                 <div class="form-group">
                   <label class="form-label">Prefixo da Pasta Destino (Opcional):</label>
-                  <input type="text" id="dest-imap-prefix" class="form-control" placeholder="ex: Restaurado_MailStore">
+                  <input type="text" id="dest-imap-prefix" class="form-control" placeholder="ex: Restaurado_Mailnov">
                 </div>
               </div>
             </div>
@@ -428,7 +438,7 @@
           <div class="quick-actions-card">
             <div class="section-title">Auditoria e Verificação de Integridade (SHA-256)</div>
             <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;">
-              Assim como no MailStore Home, esta ferramenta percorre todas as mensagens arquivadas e compara os hashes criptográficos gravados no banco de dados contra os arquivos físicos em disco.
+              O Mailnov Backup percorre todas as mensagens arquivadas e compara os hashes criptográficos gravados no banco de dados contra os arquivos físicos em disco.
             </p>
             <button class="btn btn-primary" onclick="runIntegrityAudit()">Executar Auditoria de Integridade</button>
 

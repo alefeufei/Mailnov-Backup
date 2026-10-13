@@ -346,6 +346,59 @@ class Database:
                 ))
         return results
 
+    def get_browse_tree(self) -> List[dict]:
+        """Retorna a estrutura hierárquica completa agrupada por perfil e suas respectivas pastas."""
+        profiles = self.list_profiles()
+        prof_map = {p.id: p for p in profiles}
+
+        all_folders = self.get_folders()
+        tree = []
+
+        folders_by_acc: Dict[str, List[FolderInfo]] = {}
+        for f in all_folders:
+            folders_by_acc.setdefault(f.account_id, []).append(f)
+
+        for prof in profiles:
+            p_folders = folders_by_acc.get(prof.id, [])
+            tree.append({
+                "account_id": prof.id,
+                "account_name": prof.name,
+                "username": prof.imap.username,
+                "host": prof.imap.host,
+                "total_messages": prof.message_count,
+                "total_size_bytes": prof.total_size_bytes,
+                "folders": [
+                    {
+                        "folder_name": f.folder_name,
+                        "delimiter": f.delimiter,
+                        "message_count": f.message_count,
+                    }
+                    for f in p_folders
+                ]
+            })
+
+        for acc_id, p_folders in folders_by_acc.items():
+            if acc_id not in prof_map:
+                total_msgs = sum(f.message_count for f in p_folders)
+                tree.append({
+                    "account_id": acc_id,
+                    "account_name": f"Conta {acc_id}",
+                    "username": acc_id,
+                    "host": "",
+                    "total_messages": total_msgs,
+                    "total_size_bytes": 0,
+                    "folders": [
+                        {
+                            "folder_name": f.folder_name,
+                            "delimiter": f.delimiter,
+                            "message_count": f.message_count,
+                        }
+                        for f in p_folders
+                    ]
+                })
+
+        return tree
+
     # --- Mensagens ---
     def get_existing_uids(self, account_id: str, folder: str) -> set:
         with self.get_connection() as conn:

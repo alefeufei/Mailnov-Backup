@@ -553,8 +553,81 @@ body {
   flex-shrink: 0;
 }
 
+.profile-tree-group {
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background-color: #fafbfc;
+}
+
+.profile-tree-header {
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  background-color: #f1f5f9;
+  border-bottom: 1px solid transparent;
+  transition: background-color 0.15s ease;
+  user-select: none;
+}
+
+.profile-tree-header:hover {
+  background-color: #e2e8f0;
+}
+
+.profile-tree-header.active {
+  background-color: var(--primary-light);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.profile-toggle-btn {
+  font-size: 11px;
+  color: var(--text-muted);
+  width: 16px;
+  text-align: center;
+  transition: transform 0.15s ease;
+}
+
+.profile-toggle-btn.collapsed {
+  transform: rotate(-90deg);
+}
+
+.profile-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.profile-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.profile-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.profile-folders-container {
+  padding: 4px 6px;
+  background-color: #ffffff;
+}
+
+.profile-folders-container.collapsed {
+  display: none;
+}
+
 .tree-node {
-  padding: 7px 10px;
+  padding: 6px 10px;
   border-radius: 6px;
   display: flex;
   align-items: center;
@@ -564,6 +637,10 @@ body {
   margin-bottom: 2px;
   color: var(--text-main);
   transition: background 0.15s ease;
+}
+
+.tree-node.sub-folder {
+  padding-left: 20px;
 }
 
 .tree-node:hover {
@@ -585,7 +662,8 @@ body {
   font-weight: 600;
 }
 
-.tree-node.active .badge-count {
+.tree-node.active .badge-count,
+.profile-tree-header.active .badge-count {
   background-color: var(--primary);
   color: #ffffff;
 }
