@@ -410,3 +410,60 @@ fn reindex_of_a_legacy_archive_without_sidecars_uses_directory_names() {
         ]
     );
 }
+
+#[test]
+fn folders_named_like_sidecars_archive_and_reindex_exactly() {
+    let dir = tempfile::tempdir().unwrap();
+    let names = [
+        ".account",
+        ".folder",
+        ".account.tmp",
+        ".folder.tmp",
+        ".Trash",
+    ];
+    {
+        let mut s = FsSqliteStore::open(dir.path()).unwrap();
+        // the account sidecar exists before any of these folders is created
+        s.commit_batch("me", "INBOX", 1, &[raw(1, 99)], 1).unwrap();
+        for (i, f) in names.iter().enumerate() {
+            s.commit_batch("me", f, 1, &[raw(1, i as u32 + 1)], 1)
+                .unwrap();
+        }
+        assert_eq!(s.verify().unwrap().checked, names.len() + 1);
+    }
+    wipe_index(dir.path());
+    let mut s = FsSqliteStore::open(dir.path()).unwrap();
+    assert_eq!(s.reindex().unwrap(), names.len() + 1);
+    let mut got: Vec<String> = s
+        .messages("me")
+        .unwrap()
+        .into_iter()
+        .map(|m| m.folder)
+        .collect();
+    got.sort();
+    let mut want: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    want.push("INBOX".into());
+    want.sort();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn reindex_keeps_legacy_dot_directories() {
+    // Written before folder names starting with "." were escaped (and before sidecars).
+    let dir = tempfile::tempdir().unwrap();
+    FsSqliteStore::open(dir.path()).unwrap();
+    let sha = sha256_hex(&eml(1));
+    let legacy = dir
+        .path()
+        .join("mail")
+        .join("me")
+        .join(".Trash")
+        .join(&sha[..2]);
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::write(legacy.join(format!("{sha}.eml")), eml(1)).unwrap();
+    wipe_index(dir.path());
+    let mut s = FsSqliteStore::open(dir.path()).unwrap();
+    assert_eq!(s.reindex().unwrap(), 1);
+    assert_eq!(s.messages("me").unwrap()[0].folder, ".Trash");
+    assert_eq!(s.read_eml(&sha).unwrap(), eml(1));
+}

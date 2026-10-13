@@ -23,8 +23,15 @@ pub fn safe_component(name: &str) -> String {
     while s.ends_with('.') || s.ends_with(' ') {
         s.pop();
     }
-    let stem = s.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
-    if s.is_empty() || RESERVED.contains(&stem.as_str()) {
+    let stem = s
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_ascii_uppercase();
+    // A leading "." is escaped too: names like ".account"/".folder" are reserved for the archive's
+    // sidecar files (and dot names are hidden on Unix). The hash suffix keeps it collision-free.
+    if s.is_empty() || s.starts_with('.') || RESERVED.contains(&stem.as_str()) {
         s.insert(0, '_');
     }
     let truncated = s.chars().count() > MAX_LEN;
@@ -69,20 +76,57 @@ mod tests {
     #[test]
     fn safe_component_handles_edge_cases() {
         assert_eq!(safe_component("INBOX"), "INBOX");
-        for bad in ["..", ".", "", "CON", "nul.txt", "trail. ", "a\u{1}b", &"x".repeat(200)] {
+        for bad in [
+            "..",
+            ".",
+            "",
+            "CON",
+            "nul.txt",
+            "trail. ",
+            "a\u{1}b",
+            &"x".repeat(200),
+        ] {
             let s = safe_component(bad);
             assert!(!s.is_empty() && s != ".." && s != ".", "{bad:?} -> {s:?}");
             assert!(s.chars().count() <= 80);
             assert!(!s.ends_with('.') && !s.ends_with(' '));
-            assert!(!s.chars().any(|c| c.is_control() || "<>:\"/\\|?*".contains(c)));
+            assert!(!s
+                .chars()
+                .any(|c| c.is_control() || "<>:\"/\\|?*".contains(c)));
             let stem = s.split('.').next().unwrap().to_ascii_uppercase();
             assert!(!RESERVED.contains(&stem.as_str()), "{s}");
         }
     }
 
     #[test]
+    fn safe_component_never_starts_with_a_dot() {
+        for name in [
+            ".account",
+            ".folder",
+            ".account.tmp",
+            ".Trash",
+            ".x.",
+            ". a",
+        ] {
+            let s = safe_component(name);
+            assert!(!s.starts_with('.'), "{name:?} -> {s:?}");
+            assert_eq!(s, safe_component(name), "deterministic");
+            assert!(!s.chars().any(|c| "<>:\"/\\|?*".contains(c)));
+        }
+        assert_ne!(safe_component(".account"), safe_component("_.account"));
+        assert_ne!(safe_component(".account"), safe_component(".account.tmp"));
+    }
+
+    #[test]
     fn eml_relpath_layout() {
         let p = eml_relpath("me", "INBOX", "abcdef");
-        assert_eq!(p, PathBuf::from("mail").join("me").join("INBOX").join("ab").join("abcdef.eml"));
+        assert_eq!(
+            p,
+            PathBuf::from("mail")
+                .join("me")
+                .join("INBOX")
+                .join("ab")
+                .join("abcdef.eml")
+        );
     }
 }

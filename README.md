@@ -158,7 +158,8 @@ aparecia (o `.eml` fica só na primeira) e o registro do que já foi exportado. 
 
 - `<conta>` é o nome do perfil; `<pasta>` é o nome da pasta IMAP com caracteres inválidos no
   Windows trocados por `_` (inclusive `/` entre níveis, p. ex. `Trabalho/Projetos 2024` vira
-  `Trabalho_Projetos 2024-<hash>`) e abreviado quando muito longo — por isso o nome verdadeiro fica
+  `Trabalho_Projetos 2024-<hash>`; nomes que começam com `.` ganham um `_` na frente e o sufixo
+  de hash) e abreviado quando muito longo — por isso o nome verdadeiro fica
   nos arquivos `.account` e `.folder`, que o `reindex` usa; `<aa>` são os dois primeiros caracteres
   do SHA-256.
 - Cada `.eml` é a mensagem **exatamente** como veio do servidor; o nome é o SHA-256 dos bytes.
