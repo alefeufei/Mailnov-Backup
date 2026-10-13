@@ -180,16 +180,17 @@ impl MailSource for ImapSource {
     fn select(&mut self, folder: &str) -> Result<FolderState> {
         let wire = self.wire_name(folder);
         let mb = self.conn.run(|s| s.examine(&wire))?;
-        match (mb.uid_validity, mb.uid_next) {
-            (Some(uidvalidity), Some(uidnext)) => {
+        // UIDNEXT is optional (the engine never uses it); UIDVALIDITY is what makes UIDs usable.
+        match mb.uid_validity {
+            Some(uidvalidity) => {
                 self.conn.set_selected(Some((wire, uidvalidity)));
                 Ok(FolderState {
                     uidvalidity,
-                    uidnext,
+                    uidnext: mb.uid_next.unwrap_or(0),
                 })
             }
-            _ => Err(Error::Imap(format!(
-                "server did not report UIDVALIDITY/UIDNEXT for {folder}"
+            None => Err(Error::Imap(format!(
+                "server did not report UIDVALIDITY for {folder}"
             ))),
         }
     }
@@ -637,6 +638,35 @@ mod source_tests {
             cmds.contains(&"EXAMINE \"weird &!!- name\"".to_string()),
             "{cmds:?}"
         );
+    }
+
+    #[test]
+    fn select_does_not_require_uidnext() {
+        let server = Server::new(|_, cmd| {
+            base(cmd).unwrap_or_else(|| {
+                Reply::Text(
+                    "* 2 EXISTS\r\n* OK [UIDVALIDITY 42] v\r\n{tag} OK [READ-ONLY] ok\r\n".into(),
+                )
+            })
+        });
+        let mut s = source(&server);
+        let st = s.select("INBOX").unwrap();
+        assert_eq!(st.uidvalidity, 42);
+        assert_eq!(st.uidnext, 0);
+    }
+
+    #[test]
+    fn select_still_requires_uidvalidity() {
+        let server = Server::new(|_, cmd| {
+            base(cmd).unwrap_or_else(|| {
+                Reply::Text(
+                    "* 2 EXISTS\r\n* OK [UIDNEXT 3] n\r\n{tag} OK [READ-ONLY] ok\r\n".into(),
+                )
+            })
+        });
+        let mut s = source(&server);
+        let r = s.select("INBOX");
+        assert!(matches!(r, Err(Error::Imap(_))), "{r:?}");
     }
 
     #[test]

@@ -1,6 +1,26 @@
 //! In-memory fakes for tests (`cfg(test)` or feature `testing`).
 use crate::{Error, FolderState, MailSource, RawMessage, Result};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+/// Kind of error injected by the per-folder failure hooks of [`FakeSource`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Injected {
+    /// A server `NO`/`BAD` for that folder (`Error::Imap`).
+    Imap,
+    /// The connection is gone (`Error::Connection`).
+    Connection,
+}
+
+impl Injected {
+    fn error(self, what: &str, folder: &str) -> Error {
+        match self {
+            Injected::Imap => Error::Imap(format!("injected: {what} failed for {folder}")),
+            Injected::Connection => Error::Connection(format!(
+                "injected: connection lost during {what} of {folder}"
+            )),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct FakeMsg {
@@ -31,6 +51,10 @@ pub struct FakeSource {
     pub drop_from_fetch: HashSet<u32>,
     /// UIDs expunged from the folder the moment they are fetched (gone between listing and fetch).
     pub expunge_on_fetch: HashSet<u32>,
+    /// `select` of these folders fails with the given kind of error.
+    pub fail_select: HashMap<String, Injected>,
+    /// `uids_after` fails with the given kind of error while these folders are selected.
+    pub fail_uids_after: HashMap<String, Injected>,
     successful_fetches: usize,
     selected: Option<String>,
 }
@@ -41,7 +65,10 @@ impl FakeSource {
     }
 
     pub fn add_folder(&mut self, name: &str, uidvalidity: u32) {
-        self.folders.entry(name.to_string()).or_default().uidvalidity = uidvalidity;
+        self.folders
+            .entry(name.to_string())
+            .or_default()
+            .uidvalidity = uidvalidity;
     }
 
     pub fn add_message(&mut self, folder: &str, uid: u32, bytes: Vec<u8>, flags: &[&str]) {
@@ -56,12 +83,16 @@ impl FakeSource {
         flags: &[&str],
         internal_date: Option<i64>,
     ) {
-        self.folders.entry(folder.to_string()).or_default().messages.push(FakeMsg {
-            uid,
-            flags: flags.iter().map(|s| s.to_string()).collect(),
-            internal_date,
-            bytes,
-        });
+        self.folders
+            .entry(folder.to_string())
+            .or_default()
+            .messages
+            .push(FakeMsg {
+                uid,
+                flags: flags.iter().map(|s| s.to_string()).collect(),
+                internal_date,
+                bytes,
+            });
     }
 
     pub fn remove_message(&mut self, folder: &str, uid: u32) {
@@ -95,11 +126,18 @@ impl FakeSource {
         self.fail_after_fetches = None;
         self.drop_from_fetch.clear();
         self.expunge_on_fetch.clear();
+        self.fail_select.clear();
+        self.fail_uids_after.clear();
     }
 
     fn current(&self) -> Result<&FakeFolder> {
-        let name = self.selected.as_ref().ok_or_else(|| Error::Imap("no folder selected".into()))?;
-        self.folders.get(name).ok_or_else(|| Error::Imap(format!("no such folder {name}")))
+        let name = self
+            .selected
+            .as_ref()
+            .ok_or_else(|| Error::Imap("no folder selected".into()))?;
+        self.folders
+            .get(name)
+            .ok_or_else(|| Error::Imap(format!("no such folder {name}")))
     }
 }
 
@@ -112,7 +150,11 @@ fn header_message_id(bytes: &[u8]) -> Option<String> {
         if let Some((k, v)) = line.split_once(':') {
             if k.trim().eq_ignore_ascii_case("message-id") {
                 let v = v.trim().trim_start_matches('<').trim_end_matches('>');
-                return if v.is_empty() { None } else { Some(v.to_string()) };
+                return if v.is_empty() {
+                    None
+                } else {
+                    Some(v.to_string())
+                };
             }
         }
     }
@@ -125,17 +167,28 @@ impl MailSource for FakeSource {
     }
 
     fn select(&mut self, folder: &str) -> Result<FolderState> {
+        if let Some(kind) = self.fail_select.get(folder) {
+            return Err(kind.error("select", folder));
+        }
         let f = self
             .folders
             .get(folder)
             .ok_or_else(|| Error::Imap(format!("no such folder {folder}")))?;
         let uidnext = f.messages.iter().map(|m| m.uid).max().map_or(1, |u| u + 1);
-        let st = FolderState { uidvalidity: f.uidvalidity, uidnext };
+        let st = FolderState {
+            uidvalidity: f.uidvalidity,
+            uidnext,
+        };
         self.selected = Some(folder.to_string());
         Ok(st)
     }
 
     fn uids_after(&mut self, last_uid: u32, since: Option<i64>) -> Result<Vec<u32>> {
+        if let Some(name) = &self.selected {
+            if let Some(kind) = self.fail_uids_after.get(name) {
+                return Err(kind.error("uids_after", name));
+            }
+        }
         let mut v: Vec<u32> = self
             .current()?
             .messages
@@ -174,7 +227,8 @@ impl MailSource for FakeSource {
         if let Some(name) = self.selected.clone() {
             if let Some(f) = self.folders.get_mut(&name) {
                 let gone = &self.expunge_on_fetch;
-                f.messages.retain(|m| !(gone.contains(&m.uid) && uids.contains(&m.uid)));
+                f.messages
+                    .retain(|m| !(gone.contains(&m.uid) && uids.contains(&m.uid)));
             }
         }
         let f = self.current()?;

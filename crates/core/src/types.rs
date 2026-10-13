@@ -11,14 +11,31 @@ pub struct RawMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FolderState {
     pub uidvalidity: u32,
+    /// Best effort: 0 when the server did not report UIDNEXT (the engine never relies on it).
     pub uidnext: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    FolderStarted { folder: String, total: usize },
-    MessageArchived { folder: String, uid: u32 },
-    MessageFailed { folder: String, uid: u32, reason: String },
+    FolderStarted {
+        folder: String,
+        total: usize,
+    },
+    MessageArchived {
+        folder: String,
+        uid: u32,
+    },
+    MessageFailed {
+        folder: String,
+        uid: u32,
+        reason: String,
+    },
+    /// A whole folder could not be processed (not found, could not be opened, server error);
+    /// the run went on with the next folder. Counts as one failure in `RunSummary::failed`.
+    FolderFailed {
+        folder: String,
+        reason: String,
+    },
     Finished(RunSummary),
 }
 

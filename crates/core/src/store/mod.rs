@@ -3,9 +3,9 @@ pub mod paths;
 
 use crate::{RawMessage, Result};
 
-pub use fs_sqlite::FsSqliteStore;
 #[cfg(any(test, feature = "testing"))]
 pub use fs_sqlite::FaultPoint;
+pub use fs_sqlite::FsSqliteStore;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredFolder {
@@ -46,8 +46,16 @@ pub trait Store {
         batch: &[RawMessage],
         new_last_uid: u32,
     ) -> Result<BatchOutcome>;
-    fn has_message_id(&self, account: &str, message_id: &str) -> Result<bool>;
-    fn update_flags(&mut self, account: &str, folder: &str, uid: u32, flags: &[String]) -> Result<()>;
+    /// Whether a message with this Message-ID has a location in `folder` of `account` (with or
+    /// without a UID: a location whose UID was detached by a UIDVALIDITY change still counts).
+    fn has_message_id(&self, account: &str, folder: &str, message_id: &str) -> Result<bool>;
+    fn update_flags(
+        &mut self,
+        account: &str,
+        folder: &str,
+        uid: u32,
+        flags: &[String],
+    ) -> Result<()>;
     fn messages(&self, account: &str) -> Result<Vec<StoredMessage>>;
     fn read_eml(&self, sha256: &str) -> Result<Vec<u8>>;
     fn export_done(&self, target: &str, sha256: &str, folder: &str) -> Result<bool>;

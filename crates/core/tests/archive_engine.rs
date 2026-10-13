@@ -1,6 +1,8 @@
-use mailbackup_core::store::{BatchOutcome, FaultPoint, FsSqliteStore, Store, StoredFolder, StoredMessage, VerifyReport};
+use mailbackup_core::store::{
+    BatchOutcome, FaultPoint, FsSqliteStore, Store, StoredFolder, StoredMessage, VerifyReport,
+};
 use mailbackup_core::sync::{archive, ArchiveOptions};
-use mailbackup_core::testing::FakeSource;
+use mailbackup_core::testing::{FakeSource, Injected};
 use mailbackup_core::{Error, Event, RawMessage, Result, RunSummary};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
@@ -17,7 +19,12 @@ fn eml(n: u32) -> Vec<u8> {
 }
 
 fn opts(batch: usize) -> ArchiveOptions {
-    ArchiveOptions { account: ACC.into(), folders: None, since: None, batch_size: batch }
+    ArchiveOptions {
+        account: ACC.into(),
+        folders: None,
+        since: None,
+        batch_size: batch,
+    }
 }
 
 fn inbox(n: u32) -> FakeSource {
@@ -29,7 +36,11 @@ fn inbox(n: u32) -> FakeSource {
     f
 }
 
-fn run(src: &mut FakeSource, store: &mut dyn Store, o: &ArchiveOptions) -> (Result<RunSummary>, Vec<Event>) {
+fn run(
+    src: &mut FakeSource,
+    store: &mut dyn Store,
+    o: &ArchiveOptions,
+) -> (Result<RunSummary>, Vec<Event>) {
     let (tx, rx): (Sender<Event>, Receiver<Event>) = channel();
     let r = archive(src, store, o, &tx);
     drop(tx);
@@ -48,7 +59,13 @@ fn walk(root: &Path) -> BTreeMap<String, Vec<u8>> {
             if p.is_dir() {
                 go(base, &p, out)
             } else if p.extension().is_some_and(|x| x == "eml") {
-                out.insert(p.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/"), std::fs::read(&p).unwrap());
+                out.insert(
+                    p.strip_prefix(base)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                    std::fs::read(&p).unwrap(),
+                );
             }
         }
     }
@@ -73,9 +90,18 @@ fn first_run_archives_everything() {
     assert_eq!(last_uid(&store, "INBOX"), 120);
     assert_eq!(src.fetch_calls, 3);
     assert_eq!(store.messages(ACC).unwrap().len(), 120);
-    assert!(matches!(events.first(), Some(Event::FolderStarted { total: 120, .. })));
+    assert!(matches!(
+        events.first(),
+        Some(Event::FolderStarted { total: 120, .. })
+    ));
     assert!(matches!(events.last(), Some(Event::Finished(_))));
-    assert_eq!(events.iter().filter(|e| matches!(e, Event::MessageArchived { .. })).count(), 120);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, Event::MessageArchived { .. }))
+            .count(),
+        120
+    );
 }
 
 #[test]
@@ -109,7 +135,10 @@ fn resume_after_failure_between_batches() {
     assert_eq!(last_uid(&store, "INBOX"), 50);
     src.clear_failures();
     run(&mut src, &mut store, &opts(50)).0.unwrap();
-    assert_eq!(norm(store.messages(ACC).unwrap()), norm(ref_store.messages(ACC).unwrap()));
+    assert_eq!(
+        norm(store.messages(ACC).unwrap()),
+        norm(ref_store.messages(ACC).unwrap())
+    );
     assert_eq!(walk(dir.path()), walk(ref_dir.path()));
     assert_eq!(last_uid(&store, "INBOX"), 120);
 }
@@ -131,7 +160,10 @@ fn uidvalidity_change_reconciles_by_message_id() {
     assert_eq!(shas.len(), 6);
     assert_eq!(
         store.folder_state(ACC, "INBOX").unwrap(),
-        Some(StoredFolder { uidvalidity: 99, last_uid: 200 })
+        Some(StoredFolder {
+            uidvalidity: 99,
+            last_uid: 200
+        })
     );
     // and a further run is a no-op
     let before = src.fetch_calls;
@@ -152,7 +184,10 @@ fn uidvalidity_change_with_all_known_still_records_state() {
     assert!(src.fetched_uids.is_empty());
     assert_eq!(
         store.folder_state(ACC, "INBOX").unwrap(),
-        Some(StoredFolder { uidvalidity: 99, last_uid: 105 })
+        Some(StoredFolder {
+            uidvalidity: 99,
+            last_uid: 105
+        })
     );
 }
 
@@ -165,7 +200,9 @@ fn bad_message_does_not_abort() {
     let (r, events) = run(&mut src, &mut store, &opts(50));
     let s = r.unwrap();
     assert_eq!((s.added, s.failed), (9, 1));
-    assert!(events.iter().any(|e| matches!(e, Event::MessageFailed { uid: 5, .. })));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Event::MessageFailed { uid: 5, .. })));
     assert_eq!(store.messages(ACC).unwrap().len(), 9);
 }
 
@@ -218,7 +255,14 @@ fn deleted_at_source_stays_archived() {
     src.remove_message("INBOX", 3);
     run(&mut src, &mut store, &opts(50)).0.unwrap();
     assert_eq!(store.messages(ACC).unwrap().len(), 5);
-    assert_eq!(store.verify().unwrap(), VerifyReport { checked: 5, missing: vec![], corrupt: vec![] });
+    assert_eq!(
+        store.verify().unwrap(),
+        VerifyReport {
+            checked: 5,
+            missing: vec![],
+            corrupt: vec![]
+        }
+    );
 }
 
 #[test]
@@ -227,7 +271,11 @@ fn flags_are_updated_for_known_messages() {
     let mut store = FsSqliteStore::open(dir.path()).unwrap();
     let mut src = inbox(3);
     run(&mut src, &mut store, &opts(2)).0.unwrap();
-    assert!(store.messages(ACC).unwrap().iter().all(|m| m.flags.is_empty()));
+    assert!(store
+        .messages(ACC)
+        .unwrap()
+        .iter()
+        .all(|m| m.flags.is_empty()));
     src.set_flags("INBOX", 2, &["\\Seen"]);
     src.set_flags("INBOX", 3, &["\\Flagged"]);
     let before = src.fetch_calls;
@@ -250,7 +298,12 @@ fn folder_filter_and_since_are_respected() {
     src.add_message_dated("INBOX", 1, eml(1), &[], Some(100));
     src.add_message_dated("INBOX", 2, eml(2), &[], Some(200));
     src.add_message_dated("Sent", 1, eml(3), &[], Some(300));
-    let o = ArchiveOptions { account: ACC.into(), folders: Some(vec!["INBOX".into()]), since: Some(150), batch_size: 50 };
+    let o = ArchiveOptions {
+        account: ACC.into(),
+        folders: Some(vec!["INBOX".into()]),
+        since: Some(150),
+        batch_size: 50,
+    };
     let s = run(&mut src, &mut store, &o).0.unwrap();
     assert_eq!(s.added, 1);
     assert_eq!(store.folder_state(ACC, "Sent").unwrap(), None);
@@ -282,15 +335,22 @@ impl Store for Faulty {
     fn folder_state(&self, a: &str, f: &str) -> Result<Option<StoredFolder>> {
         self.inner.folder_state(a, f)
     }
-    fn commit_batch(&mut self, a: &str, f: &str, v: u32, b: &[RawMessage], l: u32) -> Result<BatchOutcome> {
+    fn commit_batch(
+        &mut self,
+        a: &str,
+        f: &str,
+        v: u32,
+        b: &[RawMessage],
+        l: u32,
+    ) -> Result<BatchOutcome> {
         if self.commits == self.fail_at {
             self.inner.inject_fault(self.point);
         }
         self.commits += 1;
         self.inner.commit_batch(a, f, v, b, l)
     }
-    fn has_message_id(&self, a: &str, m: &str) -> Result<bool> {
-        self.inner.has_message_id(a, m)
+    fn has_message_id(&self, a: &str, f: &str, m: &str) -> Result<bool> {
+        self.inner.has_message_id(a, f, m)
     }
     fn update_flags(&mut self, a: &str, f: &str, u: u32, fl: &[String]) -> Result<()> {
         self.inner.update_flags(a, f, u, fl)
@@ -395,11 +455,18 @@ fn reconcile_with_overlapping_renumbering_never_misapplies_flags() {
     let sha = |n: u32| mailbackup_core::sha256_hex(&eml(n));
     for m in store.messages(ACC).unwrap() {
         if m.sha256 == sha(1) || m.sha256 == sha(2) {
-            assert!(m.flags.is_empty(), "flags leaked onto the wrong message: {m:?}");
+            assert!(
+                m.flags.is_empty(),
+                "flags leaked onto the wrong message: {m:?}"
+            );
         }
         if let Some(u) = m.uid {
             // any location that still has a uid must match the source's message at that uid
-            let expected = src.folders["INBOX"].messages.iter().find(|x| x.uid == u).unwrap();
+            let expected = src.folders["INBOX"]
+                .messages
+                .iter()
+                .find(|x| x.uid == u)
+                .unwrap();
             assert_eq!(m.sha256, mailbackup_core::sha256_hex(&expected.bytes));
         }
     }
@@ -419,7 +486,14 @@ fn interrupted_reconcile_keeps_old_uidvalidity_and_reconciles_again() {
     src.fail_after_fetches = Some(src.fetch_calls + 1);
     let (r, _) = run(&mut src, &mut store, &opts(5));
     assert!(matches!(r, Err(Error::Imap(_))));
-    assert_eq!(store.folder_state(ACC, "INBOX").unwrap().unwrap().uidvalidity, 7);
+    assert_eq!(
+        store
+            .folder_state(ACC, "INBOX")
+            .unwrap()
+            .unwrap()
+            .uidvalidity,
+        7
+    );
     src.clear_failures();
     src.fetched_uids.clear();
     let s = run(&mut src, &mut store, &opts(5)).0.unwrap();
@@ -427,10 +501,17 @@ fn interrupted_reconcile_keeps_old_uidvalidity_and_reconciles_again() {
     assert_eq!(s.added, 5);
     assert_eq!(
         store.folder_state(ACC, "INBOX").unwrap(),
-        Some(StoredFolder { uidvalidity: 99, last_uid: 110 })
+        Some(StoredFolder {
+            uidvalidity: 99,
+            last_uid: 110
+        })
     );
-    let shas: std::collections::BTreeSet<_> =
-        store.messages(ACC).unwrap().iter().map(|m| m.sha256.clone()).collect();
+    let shas: std::collections::BTreeSet<_> = store
+        .messages(ACC)
+        .unwrap()
+        .iter()
+        .map(|m| m.sha256.clone())
+        .collect();
     assert_eq!(shas.len(), 10);
 }
 
@@ -446,14 +527,24 @@ fn reconcile_with_failed_message_keeps_old_uidvalidity() {
     src.fail_uids.insert(110);
     let s = run(&mut src, &mut store, &opts(50)).0.unwrap();
     assert_eq!(s.failed, 1);
-    assert_eq!(store.folder_state(ACC, "INBOX").unwrap().unwrap().uidvalidity, 7);
+    assert_eq!(
+        store
+            .folder_state(ACC, "INBOX")
+            .unwrap()
+            .unwrap()
+            .uidvalidity,
+        7
+    );
     src.clear_failures();
     src.fetched_uids.clear();
     run(&mut src, &mut store, &opts(50)).0.unwrap();
     assert_eq!(src.fetched_uids, vec![110]);
     assert_eq!(
         store.folder_state(ACC, "INBOX").unwrap(),
-        Some(StoredFolder { uidvalidity: 99, last_uid: 111 })
+        Some(StoredFolder {
+            uidvalidity: 99,
+            last_uid: 111
+        })
     );
 }
 
@@ -484,9 +575,240 @@ fn all_fail_batch_errors_but_keeps_earlier_batches() {
     assert!(matches!(r, Err(Error::Imap(_))));
     let failed: Vec<u32> = events
         .iter()
-        .filter_map(|e| if let Event::MessageFailed { uid, .. } = e { Some(*uid) } else { None })
+        .filter_map(|e| {
+            if let Event::MessageFailed { uid, .. } = e {
+                Some(*uid)
+            } else {
+                None
+            }
+        })
         .collect();
     assert_eq!(failed, vec![5, 6, 7, 8]);
     assert_eq!(store.messages(ACC).unwrap().len(), 4);
     assert_eq!(last_uid(&store, "INBOX"), 4);
+}
+
+// ---- final fix wave: per-folder failures (I1) ----
+
+fn three_folders() -> FakeSource {
+    let mut f = FakeSource::new();
+    for (name, base) in [("A", 0u32), ("B", 10), ("INBOX", 20)] {
+        f.add_folder(name, 7);
+        for i in 1..=2 {
+            f.add_message(name, i, eml(base + i), &[]);
+        }
+    }
+    f
+}
+
+fn folder_failures(events: &[Event]) -> Vec<(String, String)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::FolderFailed { folder, reason } => Some((folder.clone(), reason.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn folder_that_cannot_be_selected_is_reported_and_later_folders_are_archived() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = three_folders();
+    src.fail_select.insert("A".into(), Injected::Imap);
+    let (r, events) = run(&mut src, &mut store, &opts(50));
+    let s = r.unwrap();
+    assert_eq!((s.added, s.failed), (4, 1));
+    let ff = folder_failures(&events);
+    assert_eq!(ff.len(), 1);
+    assert_eq!(ff[0].0, "A");
+    assert!(ff[0].1.contains("select"), "{ff:?}");
+    assert_eq!(store.folder_state(ACC, "A").unwrap(), None);
+    assert_eq!(last_uid(&store, "B"), 2);
+    assert_eq!(last_uid(&store, "INBOX"), 2);
+    assert!(matches!(events.last(), Some(Event::Finished(f)) if f.failed == 1));
+    // once the folder is healthy again it is archived
+    src.clear_failures();
+    let s = run(&mut src, &mut store, &opts(50)).0.unwrap();
+    assert_eq!((s.added, s.failed), (2, 0));
+}
+
+#[test]
+fn folder_whose_search_fails_is_reported_and_the_run_goes_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = three_folders();
+    src.fail_uids_after.insert("B".into(), Injected::Imap);
+    let (r, events) = run(&mut src, &mut store, &opts(50));
+    let s = r.unwrap();
+    assert_eq!((s.added, s.failed), (4, 1));
+    assert_eq!(
+        folder_failures(&events)
+            .iter()
+            .map(|f| f.0.as_str())
+            .collect::<Vec<_>>(),
+        vec!["B"]
+    );
+    assert_eq!(last_uid(&store, "INBOX"), 2);
+}
+
+#[test]
+fn connection_error_on_a_folder_still_aborts_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = three_folders();
+    src.fail_select.insert("A".into(), Injected::Connection);
+    let (r, _) = run(&mut src, &mut store, &opts(50));
+    assert!(matches!(r, Err(Error::Connection(_))), "{r:?}");
+    assert_eq!(store.folder_state(ACC, "B").unwrap(), None);
+    let mut src = three_folders();
+    src.fail_uids_after.insert("B".into(), Injected::Connection);
+    let (r, _) = run(&mut src, &mut store, &opts(50));
+    assert!(matches!(r, Err(Error::Connection(_))), "{r:?}");
+    assert_eq!(store.folder_state(ACC, "INBOX").unwrap(), None);
+}
+
+// ---- folder filter (I5) ----
+
+#[test]
+fn folder_filter_matches_inbox_case_insensitively_and_reports_missing_folders() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = FakeSource::new();
+    // As ImapSource presents a "."-delimiter server: canonical "/" separators.
+    src.add_folder("INBOX", 1);
+    src.add_folder("INBOX/Enviados", 1);
+    src.add_folder("Outra", 1);
+    src.add_message("INBOX", 1, eml(1), &[]);
+    src.add_message("INBOX/Enviados", 1, eml(2), &[]);
+    src.add_message("Outra", 1, eml(3), &[]);
+    let o = ArchiveOptions {
+        account: ACC.into(),
+        folders: Some(vec![
+            "inbox".into(),
+            "Inbox/Enviados".into(),
+            "INBOX.Enviados".into(),
+            "Nope".into(),
+        ]),
+        since: None,
+        batch_size: 50,
+    };
+    let (r, events) = run(&mut src, &mut store, &o);
+    let s = r.unwrap();
+    assert_eq!((s.added, s.failed), (2, 2));
+    // stored under the server's spelling
+    assert_eq!(last_uid(&store, "INBOX"), 1);
+    assert_eq!(last_uid(&store, "INBOX/Enviados"), 1);
+    assert_eq!(store.folder_state(ACC, "Outra").unwrap(), None);
+    let ff = folder_failures(&events);
+    assert_eq!(
+        ff,
+        vec![
+            ("INBOX.Enviados".to_string(), "folder not found".to_string()),
+            ("Nope".to_string(), "folder not found".to_string())
+        ]
+    );
+}
+
+// ---- reconcile is folder-scoped (I2) ----
+
+#[test]
+fn reconcile_skips_by_message_id_only_within_the_same_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = FakeSource::new();
+    src.add_folder("A", 1);
+    src.add_folder("B", 1);
+    src.add_message("A", 1, eml(1), &[]);
+    src.add_message("B", 1, eml(2), &[]);
+    run(&mut src, &mut store, &opts(50)).0.unwrap();
+    // B is reset; it now also holds a copy of A's message with the same Message-ID but
+    // different bytes, and the very same bytes moved from A.
+    let other_bytes = eml(1)
+        .into_iter()
+        .chain(b"extra\r\n".iter().copied())
+        .collect::<Vec<u8>>();
+    src.renumber("B", 2, 100);
+    src.add_message("B", 102, other_bytes.clone(), &[]);
+    src.add_message("B", 103, eml(1), &[]);
+    src.fetched_uids.clear();
+    let s = run(&mut src, &mut store, &opts(50)).0.unwrap();
+    // uid 101 (m2) is already archived in B: skipped; 102 and 103 are not in B: downloaded
+    assert_eq!(src.fetched_uids, vec![102, 103]);
+    assert_eq!((s.added, s.duplicates), (1, 1));
+    let in_b: std::collections::BTreeSet<String> = store
+        .messages(ACC)
+        .unwrap()
+        .into_iter()
+        .filter(|m| m.folder == "B")
+        .map(|m| m.sha256)
+        .collect();
+    let sha = mailbackup_core::sha256_hex;
+    assert!(in_b.contains(&sha(&other_bytes)));
+    assert!(
+        in_b.contains(&sha(&eml(1))),
+        "moved message must get a location in B"
+    );
+    assert_eq!(
+        store.folder_state(ACC, "B").unwrap(),
+        Some(StoredFolder {
+            uidvalidity: 2,
+            last_uid: 103
+        })
+    );
+}
+
+// ---- poison message (I3) ----
+
+#[test]
+fn retry_after_a_failed_uid_fetches_only_that_uid_and_then_jumps_to_the_top() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = inbox(10);
+    src.fail_uids.insert(5);
+    run(&mut src, &mut store, &opts(3)).0.unwrap();
+    assert_eq!(last_uid(&store, "INBOX"), 4);
+    // still failing: only uid 5 is requested again, nothing above it
+    src.fetched_uids.clear();
+    let (r, events) = run(&mut src, &mut store, &opts(3));
+    assert_eq!(r.unwrap().failed, 1);
+    assert_eq!(src.fetched_uids, vec![5]);
+    assert!(matches!(
+        events.first(),
+        Some(Event::FolderStarted { total: 1, .. })
+    ));
+    assert_eq!(last_uid(&store, "INBOX"), 4);
+    // healthy again
+    src.clear_failures();
+    src.fetched_uids.clear();
+    let s = run(&mut src, &mut store, &opts(3)).0.unwrap();
+    assert_eq!((s.added, s.failed), (1, 0));
+    assert_eq!(src.fetched_uids, vec![5]);
+    assert_eq!(last_uid(&store, "INBOX"), 10);
+    src.fetched_uids.clear();
+    run(&mut src, &mut store, &opts(3)).0.unwrap();
+    assert!(src.fetched_uids.is_empty());
+}
+
+#[test]
+fn a_lone_poison_message_fails_only_itself_and_later_folders_still_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = three_folders();
+    src.add_message("A", 3, eml(3), &[]);
+    run(&mut src, &mut store, &opts(50)).0.unwrap();
+    // a new message in A that can never be downloaded, alone in its batch
+    src.add_message("A", 4, eml(4), &[]);
+    src.add_message("B", 3, eml(13), &[]);
+    src.fail_uids.insert(4);
+    let (r, events) = run(&mut src, &mut store, &opts(50));
+    let s = r.unwrap();
+    assert_eq!((s.added, s.failed), (1, 1));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Event::MessageFailed { uid: 4, .. })));
+    assert!(folder_failures(&events).is_empty());
+    assert_eq!(last_uid(&store, "A"), 3);
+    assert_eq!(last_uid(&store, "B"), 3);
 }

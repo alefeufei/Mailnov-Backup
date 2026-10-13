@@ -19,9 +19,14 @@ fn emit(events: &Sender<Event>, e: Event) {
 
 /// Fetch `uids`; on a batch error retry one UID at a time to isolate bad messages.
 /// Returns the messages obtained and the `(uid, reason)` of those that failed.
-fn fetch_isolating(source: &mut dyn MailSource, uids: &[u32]) -> (Vec<RawMessage>, Vec<(u32, String)>) {
+fn fetch_isolating(
+    source: &mut dyn MailSource,
+    uids: &[u32],
+) -> (Vec<RawMessage>, Vec<(u32, String)>) {
     match source.fetch(uids) {
         Ok(msgs) => (msgs, vec![]),
+        // A single UID was already tried on its own.
+        Err(e) if uids.len() == 1 => (vec![], vec![(uids[0], e.to_string())]),
         Err(_) => {
             let mut ok = vec![];
             let mut failed = vec![];
@@ -36,22 +41,99 @@ fn fetch_isolating(source: &mut dyn MailSource, uids: &[u32]) -> (Vec<RawMessage
     }
 }
 
+/// An error that ended the processing of one folder.
+struct FolderError {
+    error: Error,
+    /// Stop the whole run (connection/login/disk/index trouble, or a batch where every message
+    /// failed, R9/R17) instead of going on with the next folder.
+    abort: bool,
+}
+
+impl From<Error> for FolderError {
+    fn from(error: Error) -> Self {
+        let abort = is_systemic(&error);
+        FolderError { error, abort }
+    }
+}
+
+/// Failures that concern the whole connection, login or local archive rather than one folder.
+fn is_systemic(e: &Error) -> bool {
+    matches!(
+        e,
+        Error::Connection(_) | Error::Auth(_) | Error::Io(_) | Error::Db(_)
+    )
+}
+
+/// `INBOX` is case-insensitive in IMAP (also as the first level of a hierarchy).
+fn normalize_folder(name: &str) -> String {
+    match name.split_once('/') {
+        Some((first, rest)) if first.eq_ignore_ascii_case("INBOX") => format!("INBOX/{rest}"),
+        None if name.eq_ignore_ascii_case("INBOX") => "INBOX".to_string(),
+        _ => name.to_string(),
+    }
+}
+
+/// Archive every folder of `source` (or only `opts.folders`) into `store`.
+///
+/// A folder that cannot be processed (not found on the server, `EXAMINE`/search refused, any
+/// other per-folder server error) emits `FolderFailed`, counts as one failure and the run goes
+/// on with the next folder. Connection, login, disk and index errors end the run with `Err`, as
+/// does a batch in which every message failed to download.
 pub fn archive(
     source: &mut dyn MailSource,
     store: &mut dyn Store,
     opts: &ArchiveOptions,
     events: &Sender<Event>,
 ) -> Result<RunSummary> {
-    let batch_size = if opts.batch_size == 0 { DEFAULT_BATCH } else { opts.batch_size };
+    let batch_size = if opts.batch_size == 0 {
+        DEFAULT_BATCH
+    } else {
+        opts.batch_size
+    };
     let mut summary = RunSummary::default();
 
     let mut folders = source.list_folders()?;
     if let Some(wanted) = &opts.folders {
-        folders.retain(|f| wanted.contains(f));
+        let wanted_norm: Vec<String> = wanted.iter().map(|w| normalize_folder(w)).collect();
+        let listed_norm: HashSet<String> = folders.iter().map(|f| normalize_folder(f)).collect();
+        folders.retain(|f| wanted_norm.contains(&normalize_folder(f)));
+        let mut reported = HashSet::new();
+        for (w, n) in wanted.iter().zip(&wanted_norm) {
+            if !listed_norm.contains(n) && reported.insert(n.clone()) {
+                summary.failed += 1;
+                emit(
+                    events,
+                    Event::FolderFailed {
+                        folder: w.clone(),
+                        reason: "folder not found".to_string(),
+                    },
+                );
+            }
+        }
     }
 
     for folder in folders {
-        archive_folder(source, store, opts, events, &folder, batch_size, &mut summary)?;
+        if let Err(FolderError { error, abort }) = archive_folder(
+            source,
+            store,
+            opts,
+            events,
+            &folder,
+            batch_size,
+            &mut summary,
+        ) {
+            if abort {
+                return Err(error);
+            }
+            summary.failed += 1;
+            emit(
+                events,
+                Event::FolderFailed {
+                    folder: folder.clone(),
+                    reason: error.to_string(),
+                },
+            );
+        }
     }
 
     emit(events, Event::Finished(summary.clone()));
@@ -66,14 +148,20 @@ fn archive_folder(
     folder: &str,
     batch_size: usize,
     summary: &mut RunSummary,
-) -> Result<()> {
+) -> std::result::Result<(), FolderError> {
     let account = opts.account.as_str();
     let state = source.select(folder)?;
     let stored = store.folder_state(account, folder)?;
-    let reconcile = matches!(&stored, Some(s) if s.uidvalidity != 0 && s.uidvalidity != state.uidvalidity);
-    let base_last = if reconcile { 0 } else { stored.as_ref().map_or(0, |s| s.last_uid) };
+    let reconcile =
+        matches!(&stored, Some(s) if s.uidvalidity != 0 && s.uidvalidity != state.uidvalidity);
+    let base_last = if reconcile {
+        0
+    } else {
+        stored.as_ref().map_or(0, |s| s.last_uid)
+    };
 
-    // UIDs already known to the store (before this run), for flag refresh.
+    // UIDs committed under the current UIDVALIDITY (before this run): never downloaded again,
+    // and their flags are refreshed.
     let known: Vec<u32> = if reconcile || stored.is_none() {
         vec![]
     } else {
@@ -86,9 +174,20 @@ fn archive_folder(
             .into_iter()
             .collect()
     };
+    let known_set: HashSet<u32> = known.iter().copied().collect();
 
-    let uids = source.uids_after(base_last, opts.since)?;
-    emit(events, Event::FolderStarted { folder: folder.to_string(), total: uids.len() });
+    // Everything listed above `base_last`. `last_uid` may sit below UIDs that were already
+    // committed (pinned under a failed UID, or reset after a `since` change): those are skipped
+    // below, while the full listing still lets `last_uid` move up past them.
+    let listed = source.uids_after(base_last, opts.since)?;
+    let total = listed.iter().filter(|u| !known_set.contains(u)).count();
+    emit(
+        events,
+        Event::FolderStarted {
+            folder: folder.to_string(),
+            total,
+        },
+    );
 
     let mut last_uid = base_last;
     // Lowest UID that failed in this run: last_uid may never reach it.
@@ -102,16 +201,18 @@ fn archive_folder(
     };
     let mut folder_failed = false;
 
-    for chunk in uids.chunks(batch_size) {
+    for chunk in listed.chunks(batch_size) {
         let chunk_max = *chunk.iter().max().expect("chunks are non-empty");
 
         let wanted: Vec<u32> = if reconcile {
-            let answers: HashMap<u32, Option<String>> = source.message_ids(chunk)?.into_iter().collect();
+            let answers: HashMap<u32, Option<String>> =
+                source.message_ids(chunk)?.into_iter().collect();
             let mut keep = vec![];
             for &uid in chunk {
-                // No answer, or no Message-ID: unknown, so download it.
+                // No answer, or no Message-ID: unknown, so download it. Only this folder's own
+                // (old) locations count: a copy elsewhere in the account does not.
                 let known_msg = match answers.get(&uid) {
-                    Some(Some(id)) => store.has_message_id(account, id)?,
+                    Some(Some(id)) => store.has_message_id(account, folder, id)?,
                     _ => false,
                 };
                 if !known_msg {
@@ -120,22 +221,34 @@ fn archive_folder(
             }
             keep
         } else {
-            chunk.to_vec()
+            chunk
+                .iter()
+                .copied()
+                .filter(|u| !known_set.contains(u))
+                .collect()
         };
 
-        let (messages, mut failed) =
-            if wanted.is_empty() { (vec![], vec![]) } else { fetch_isolating(source, &wanted) };
+        let (messages, mut failed) = if wanted.is_empty() {
+            (vec![], vec![])
+        } else {
+            fetch_isolating(source, &wanted)
+        };
 
         // A UID absent from the response is expunged only if the source confirms it is gone.
         let got: HashSet<u32> = messages.iter().map(|m| m.uid).collect();
         let already_failed: HashSet<u32> = failed.iter().map(|(u, _)| *u).collect();
-        let missing: Vec<u32> =
-            wanted.iter().copied().filter(|u| !got.contains(u) && !already_failed.contains(u)).collect();
+        let missing: Vec<u32> = wanted
+            .iter()
+            .copied()
+            .filter(|u| !got.contains(u) && !already_failed.contains(u))
+            .collect();
         if let Some(&min_missing) = missing.iter().min() {
-            let listed: HashSet<u32> =
-                source.uids_after(min_missing - 1, opts.since)?.into_iter().collect();
+            let still: HashSet<u32> = source
+                .uids_after(min_missing - 1, opts.since)?
+                .into_iter()
+                .collect();
             for uid in missing {
-                if listed.contains(&uid) {
+                if still.contains(&uid) {
                     failed.push((uid, "missing from fetch response".to_string()));
                 }
             }
@@ -148,13 +261,22 @@ fn archive_folder(
             lowest_failed = Some(lowest_failed.map_or(*uid, |l| l.min(*uid)));
             emit(
                 events,
-                Event::MessageFailed { folder: folder.to_string(), uid: *uid, reason: reason.clone() },
+                Event::MessageFailed {
+                    folder: folder.to_string(),
+                    uid: *uid,
+                    reason: reason.clone(),
+                },
             );
         }
-        if !wanted.is_empty() && failed.len() == wanted.len() {
-            return Err(Error::Imap(format!(
-                "every message of the batch in {folder} failed to download"
-            )));
+        if wanted.len() > 1 && failed.len() == wanted.len() {
+            // Connection-level trouble (R9/R17): stop the whole run, not just this folder. A
+            // single failing UID proves nothing (it is often a poison message retried alone).
+            return Err(FolderError {
+                error: Error::Imap(format!(
+                    "every message of the batch in {folder} failed to download"
+                )),
+                abort: true,
+            });
         }
 
         let mut ceiling = chunk_max;
@@ -162,13 +284,23 @@ fn archive_folder(
             ceiling = ceiling.min(l.saturating_sub(1));
         }
         let new_last = last_uid.max(ceiling);
+        if messages.is_empty() && new_last == last_uid {
+            // Nothing to write: every UID of the chunk was skipped or failed.
+            continue;
+        }
 
         let outcome = store.commit_batch(account, folder, commit_validity, &messages, new_last)?;
         last_uid = new_last;
         summary.added += outcome.added;
         summary.duplicates += outcome.duplicates;
         for m in &messages {
-            emit(events, Event::MessageArchived { folder: folder.to_string(), uid: m.uid });
+            emit(
+                events,
+                Event::MessageArchived {
+                    folder: folder.to_string(),
+                    uid: m.uid,
+                },
+            );
         }
     }
 
@@ -177,7 +309,9 @@ fn archive_folder(
         store.commit_batch(account, folder, state.uidvalidity, &[], last_uid)?;
     }
 
-    refresh_flags(source, store, account, folder, &known, batch_size)
+    Ok(refresh_flags(
+        source, store, account, folder, &known, batch_size,
+    )?)
 }
 
 fn refresh_flags(

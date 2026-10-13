@@ -538,7 +538,10 @@ fn run_export(
 
 fn report_failures(failures: &[Failure]) {
     for f in failures {
-        eprintln!("failed: {} uid {}: {}", f.folder, f.uid, f.reason);
+        match f.uid {
+            Some(uid) => eprintln!("failed: {} uid {uid}: {}", f.folder, f.reason),
+            None => eprintln!("failed: folder {}: {}", f.folder, f.reason),
+        }
     }
 }
 
@@ -574,6 +577,27 @@ mod tests {
         fn delete(&self, _k: &str) -> Result<()> {
             Err(Error::Config("store is locked".into()))
         }
+    }
+
+    #[test]
+    fn folder_failure_is_listed_and_makes_the_run_partial() {
+        let (summary, failures) = with_progress("archive", |tx| {
+            tx.send(mailbackup_core::Event::FolderFailed {
+                folder: "Nope".into(),
+                reason: "folder not found".into(),
+            })
+            .unwrap();
+            RunSummary {
+                added: 3,
+                duplicates: 0,
+                failed: 1,
+            }
+        });
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].folder, "Nope");
+        assert_eq!(failures[0].uid, None);
+        assert_eq!(failures[0].reason, "folder not found");
+        assert_eq!(finish(None, &summary, &failures), EXIT_PARTIAL);
     }
 
     #[test]

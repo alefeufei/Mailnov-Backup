@@ -75,7 +75,11 @@ fn rel_to_string(p: &Path) -> String {
 
 fn account_id(tx: &Transaction, name: &str) -> Result<i64> {
     tx.execute("INSERT OR IGNORE INTO account(name) VALUES (?1)", [name])?;
-    Ok(tx.query_row("SELECT id FROM account WHERE name = ?1", [name], |r| r.get(0))?)
+    Ok(
+        tx.query_row("SELECT id FROM account WHERE name = ?1", [name], |r| {
+            r.get(0)
+        })?,
+    )
 }
 
 /// Write `bytes` to `full` atomically (tmp + fsync + rename); reuse an identical file already there.
@@ -109,13 +113,19 @@ impl FsSqliteStore {
                 format!(
                     "{}-{}",
                     std::process::id(),
-                    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0)
                 )
                 .as_bytes(),
             );
             fs::write(
                 &toml,
-                format!("format_version = {USER_VERSION}\narchive_id = \"{}\"\n", &id[..32]),
+                format!(
+                    "format_version = {USER_VERSION}\narchive_id = \"{}\"\n",
+                    &id[..32]
+                ),
             )?;
         }
         let conn = Connection::open(root.join("index.db"))?;
@@ -141,7 +151,9 @@ impl FsSqliteStore {
     }
 
     pub fn user_version(&self) -> Result<i64> {
-        Ok(self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+        Ok(self
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?)
     }
 
     /// Arm a one-shot failure for the next `commit_batch`.
@@ -218,7 +230,9 @@ impl Store for FsSqliteStore {
         for m in batch {
             let sha = sha256_hex(&m.bytes);
             let existing: Option<i64> = tx
-                .query_row("SELECT id FROM message WHERE sha256 = ?1", [&sha], |r| r.get(0))
+                .query_row("SELECT id FROM message WHERE sha256 = ?1", [&sha], |r| {
+                    r.get(0)
+                })
                 .optional()?;
             let message_id = match existing {
                 Some(id) => {
@@ -288,20 +302,26 @@ impl Store for FsSqliteStore {
         Ok(out)
     }
 
-    fn has_message_id(&self, account: &str, message_id: &str) -> Result<bool> {
+    fn has_message_id(&self, account: &str, folder: &str, message_id: &str) -> Result<bool> {
         let n: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM message m
              JOIN message_location l ON l.message_id = m.id
              JOIN folder f ON f.id = l.folder_id
              JOIN account a ON a.id = f.account_id
-             WHERE a.name = ?1 AND m.message_id = ?2",
-            params![account, message_id],
+             WHERE a.name = ?1 AND f.path = ?2 AND m.message_id = ?3",
+            params![account, folder, message_id],
             |r| r.get(0),
         )?;
         Ok(n > 0)
     }
 
-    fn update_flags(&mut self, account: &str, folder: &str, uid: u32, flags: &[String]) -> Result<()> {
+    fn update_flags(
+        &mut self,
+        account: &str,
+        folder: &str,
+        uid: u32,
+        flags: &[String],
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE message_location SET flags = ?1
              WHERE uid = ?2 AND folder_id = (
@@ -338,7 +358,11 @@ impl Store for FsSqliteStore {
     fn read_eml(&self, sha256: &str) -> Result<Vec<u8>> {
         let rel: Option<String> = self
             .conn
-            .query_row("SELECT eml_path FROM message WHERE sha256 = ?1", [sha256], |r| r.get(0))
+            .query_row(
+                "SELECT eml_path FROM message WHERE sha256 = ?1",
+                [sha256],
+                |r| r.get(0),
+            )
             .optional()?;
         let rel = rel.ok_or_else(|| Error::Db(format!("unknown message {sha256}")))?;
         Ok(fs::read(self.root.join(rel))?)
@@ -362,7 +386,9 @@ impl Store for FsSqliteStore {
     }
 
     fn verify(&self) -> Result<VerifyReport> {
-        let mut st = self.conn.prepare("SELECT sha256, eml_path FROM message ORDER BY id")?;
+        let mut st = self
+            .conn
+            .prepare("SELECT sha256, eml_path FROM message ORDER BY id")?;
         let rows = st
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -396,7 +422,12 @@ impl Store for FsSqliteStore {
             v.sort();
             Ok(v)
         };
-        let name = |p: &Path| p.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let name = |p: &Path| {
+            p.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        };
         for acc in subdirs(&mail)? {
             for fol in subdirs(&acc)? {
                 for pre in subdirs(&fol)? {
@@ -424,7 +455,9 @@ impl Store for FsSqliteStore {
                 |r| r.get(0),
             )?;
             let existing: Option<i64> = tx
-                .query_row("SELECT id FROM message WHERE sha256 = ?1", [&sha], |r| r.get(0))
+                .query_row("SELECT id FROM message WHERE sha256 = ?1", [&sha], |r| {
+                    r.get(0)
+                })
                 .optional()?;
             let mid = match existing {
                 Some(id) => id,

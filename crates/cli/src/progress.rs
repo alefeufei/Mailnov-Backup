@@ -4,11 +4,11 @@ use mailbackup_core::Event;
 use std::io::IsTerminal;
 use std::sync::mpsc::{channel, Sender};
 
-/// A message the engine could not process.
+/// A message (`uid` is `Some`) or a whole folder (`uid` is `None`) the engine could not process.
 #[derive(Debug, Clone)]
 pub struct Failure {
     pub folder: String,
-    pub uid: u32,
+    pub uid: Option<u32>,
     pub reason: String,
 }
 
@@ -56,7 +56,17 @@ pub fn with_progress<T>(label: &str, work: impl FnOnce(Sender<Event>) -> T) -> (
                     }
                     failures.push(Failure {
                         folder,
-                        uid,
+                        uid: Some(uid),
+                        reason,
+                    });
+                }
+                Event::FolderFailed { folder, reason } => {
+                    if bar.is_none() {
+                        println!("{label}: folder {folder}: failed: {reason}");
+                    }
+                    failures.push(Failure {
+                        folder,
+                        uid: None,
                         reason,
                     });
                 }
