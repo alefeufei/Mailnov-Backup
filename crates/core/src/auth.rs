@@ -17,7 +17,10 @@ pub struct PasswordAuth {
 
 impl PasswordAuth {
     pub fn new(user: impl Into<String>, password: impl Into<String>) -> Self {
-        Self { user: user.into(), password: password.into() }
+        Self {
+            user: user.into(),
+            password: password.into(),
+        }
     }
 }
 

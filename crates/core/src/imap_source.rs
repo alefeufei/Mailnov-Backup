@@ -20,38 +20,59 @@ pub struct ImapSource {
 
 impl std::fmt::Debug for ImapSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ImapSource").field("conn", &self.conn).finish()
+        f.debug_struct("ImapSource")
+            .field("conn", &self.conn)
+            .finish()
     }
 }
 
 impl ImapSource {
     /// Connect over TLS (certificate validated against the OS roots) and log in. A rejected login
     /// is `Error::Auth` after exactly one attempt; network errors are retried with backoff.
-    pub fn connect(host: &str, port: u16, tls: TlsMode, auth: &dyn Authenticator) -> Result<ImapSource> {
+    pub fn connect(
+        host: &str,
+        port: u16,
+        tls: TlsMode,
+        auth: Box<dyn Authenticator + Send>,
+    ) -> Result<ImapSource> {
         let sleep: SleepFn = Arc::new(std::thread::sleep);
-        Self::with_connector(Box::new(TlsConnector::new(host, port, tls)), auth, RetryPolicy::default(), sleep)
+        Self::with_connector(
+            Box::new(TlsConnector::new(host, port, tls)),
+            auth,
+            RetryPolicy::default(),
+            sleep,
+        )
     }
 
     pub(crate) fn with_connector(
         connector: Box<dyn Connector>,
-        auth: &dyn Authenticator,
+        auth: Box<dyn Authenticator + Send>,
         policy: RetryPolicy,
         sleep: SleepFn,
     ) -> Result<ImapSource> {
         let mut conn = ImapConnection::new(connector, auth, policy, sleep)?;
         conn.open()?;
-        Ok(ImapSource { conn, wire_names: HashMap::new() })
+        Ok(ImapSource {
+            conn,
+            wire_names: HashMap::new(),
+        })
     }
 
     fn wire_name(&self, folder: &str) -> String {
-        self.wire_names.get(folder).cloned().unwrap_or_else(|| encode_folder_name(folder))
+        self.wire_names
+            .get(folder)
+            .cloned()
+            .unwrap_or_else(|| encode_folder_name(folder))
     }
 }
 
 /// Extract the Message-ID value (without angle brackets) from a header block.
 fn parse_message_id(header: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(header);
-    let mut lines = text.split('\n').map(|l| l.trim_end_matches('\r')).peekable();
+    let mut lines = text
+        .split('\n')
+        .map(|l| l.trim_end_matches('\r'))
+        .peekable();
     while let Some(line) = lines.next() {
         if let Some((k, v)) = line.split_once(':') {
             if k.trim().eq_ignore_ascii_case("message-id") {
@@ -64,8 +85,16 @@ fn parse_message_id(header: &[u8]) -> Option<String> {
                         break;
                     }
                 }
-                let v = value.trim().trim_start_matches('<').trim_end_matches('>').trim();
-                return if v.is_empty() { None } else { Some(v.to_string()) };
+                let v = value
+                    .trim()
+                    .trim_start_matches('<')
+                    .trim_end_matches('>')
+                    .trim();
+                return if v.is_empty() {
+                    None
+                } else {
+                    Some(v.to_string())
+                };
             }
         }
     }
@@ -107,10 +136,17 @@ impl MailSource for ImapSource {
     fn select(&mut self, folder: &str) -> Result<FolderState> {
         let wire = self.wire_name(folder);
         let mb = self.conn.run(|s| s.examine(&wire))?;
-        self.conn.set_selected(Some(wire));
         match (mb.uid_validity, mb.uid_next) {
-            (Some(uidvalidity), Some(uidnext)) => Ok(FolderState { uidvalidity, uidnext }),
-            _ => Err(Error::Imap(format!("server did not report UIDVALIDITY/UIDNEXT for {folder}"))),
+            (Some(uidvalidity), Some(uidnext)) => {
+                self.conn.set_selected(Some((wire, uidvalidity)));
+                Ok(FolderState {
+                    uidvalidity,
+                    uidnext,
+                })
+            }
+            _ => Err(Error::Imap(format!(
+                "server did not report UIDVALIDITY/UIDNEXT for {folder}"
+            ))),
         }
     }
 
@@ -128,8 +164,9 @@ impl MailSource for ImapSource {
         let mut out: BTreeMap<u32, Option<String>> = BTreeMap::new();
         for chunk in chunk_uids(uids, LIGHT_CHUNK) {
             let set = format_uid_set(&chunk);
-            let fetches =
-                self.conn.run(|s| s.uid_fetch(&set, "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])"))?;
+            let fetches = self
+                .conn
+                .run(|s| s.uid_fetch(&set, "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])"))?;
             for f in fetches.iter() {
                 let Some(uid) = f.uid else { continue };
                 if !wanted.contains(&uid) {
@@ -150,8 +187,9 @@ impl MailSource for ImapSource {
         let mut out: BTreeMap<u32, RawMessage> = BTreeMap::new();
         for chunk in chunk_uids(uids, FETCH_CHUNK) {
             let set = format_uid_set(&chunk);
-            let fetches =
-                self.conn.run(|s| s.uid_fetch(&set, "(UID FLAGS INTERNALDATE BODY.PEEK[])"))?;
+            let fetches = self
+                .conn
+                .run(|s| s.uid_fetch(&set, "(UID FLAGS INTERNALDATE BODY.PEEK[])"))?;
             for f in fetches.iter() {
                 let Some(uid) = f.uid else { continue };
                 if !wanted.contains(&uid) {
@@ -237,7 +275,10 @@ fn decode_inner(s: &str) -> Option<String> {
             if nbits >= 6 || bits != 0 || !bytes.len().is_multiple_of(2) || bytes.is_empty() {
                 return None;
             }
-            let units: Vec<u16> = bytes.chunks(2).map(|p| u16::from_be_bytes([p[0], p[1]])).collect();
+            let units: Vec<u16> = bytes
+                .chunks(2)
+                .map(|p| u16::from_be_bytes([p[0], p[1]]))
+                .collect();
             out.push_str(&String::from_utf16(&units).ok()?);
         }
         rest = &after[end + 1..];
@@ -306,7 +347,11 @@ pub(crate) fn format_uid_set(uids: &[u32]) -> String {
             i += 1;
             end = v[i];
         }
-        parts.push(if start == end { start.to_string() } else { format!("{start}:{end}") });
+        parts.push(if start == end {
+            start.to_string()
+        } else {
+            format!("{start}:{end}")
+        });
         i += 1;
     }
     parts.join(",")
@@ -314,13 +359,17 @@ pub(crate) fn format_uid_set(uids: &[u32]) -> String {
 
 /// Sort, de-duplicate and split into chunks of at most `size` UIDs.
 pub(crate) fn chunk_uids(uids: &[u32], size: usize) -> Vec<Vec<u32>> {
-    sorted_unique(uids).chunks(size.max(1)).map(<[u32]>::to_vec).collect()
+    sorted_unique(uids)
+        .chunks(size.max(1))
+        .map(<[u32]>::to_vec)
+        .collect()
 }
 
 /// `dd-Mon-yyyy` (UTC) for IMAP `SINCE`.
 pub(crate) fn imap_date(unix: i64) -> String {
-    const MONTHS: [&str; 12] =
-        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     // Days-to-civil (Howard Hinnant).
     let z = unix.div_euclid(86_400) + 719_468;
     let era = z.div_euclid(146_097);
@@ -376,7 +425,10 @@ mod tests {
         assert_eq!(encode_folder_name("INBOX"), "INBOX");
         assert_eq!(encode_folder_name("A & B"), "A &- B");
         // RFC 3501 example
-        assert_eq!(encode_folder_name("~peter/mail/\u{53f0}\u{5317}/\u{65e5}\u{672c}\u{8a9e}"), "~peter/mail/&U,BTFw-/&ZeVnLIqe-");
+        assert_eq!(
+            encode_folder_name("~peter/mail/\u{53f0}\u{5317}/\u{65e5}\u{672c}\u{8a9e}"),
+            "~peter/mail/&U,BTFw-/&ZeVnLIqe-"
+        );
         // non-BMP goes through a surrogate pair
         assert_eq!(encode_folder_name("\u{1F600}"), "&2D3eAA-");
     }
@@ -394,7 +446,11 @@ mod tests {
             "ç",
             "Lixo.Eletrônico.2024",
         ] {
-            assert_eq!(decode_folder_name(&encode_folder_name(n)), n, "roundtrip {n}");
+            assert_eq!(
+                decode_folder_name(&encode_folder_name(n)),
+                n,
+                "roundtrip {n}"
+            );
         }
     }
 
@@ -405,7 +461,10 @@ mod tests {
         assert_eq!(format_uid_set(&[5]), "5");
         assert_eq!(format_uid_set(&[1, 3, 5]), "1,3,5");
         assert_eq!(format_uid_set(&[4, 5]), "4:5");
-        assert_eq!(format_uid_set(&[u32::MAX - 1, u32::MAX]), "4294967294:4294967295");
+        assert_eq!(
+            format_uid_set(&[u32::MAX - 1, u32::MAX]),
+            "4294967294:4294967295"
+        );
         assert_eq!(format_uid_set(&[]), "");
     }
 
@@ -432,7 +491,10 @@ mod tests {
     #[test]
     fn search_query_shape() {
         assert_eq!(search_query(10, None), "UID 11:*");
-        assert_eq!(search_query(0, Some(1_700_000_000)), "UID 1:* SINCE 14-Nov-2023");
+        assert_eq!(
+            search_query(0, Some(1_700_000_000)),
+            "UID 1:* SINCE 14-Nov-2023"
+        );
     }
 
     #[test]
@@ -454,7 +516,7 @@ mod source_tests {
         let (sleep, _) = no_sleep();
         ImapSource::with_connector(
             Box::new(MockConnector(server.clone())),
-            &PasswordAuth::new("alice", "hunter2"),
+            Box::new(PasswordAuth::new("alice", "hunter2")),
             RetryPolicy::default(),
             sleep,
         )
@@ -513,12 +575,24 @@ mod source_tests {
         });
         let mut s = source(&server);
         let st = s.select("Caixa de ção").unwrap();
-        assert_eq!(st, FolderState { uidvalidity: 99, uidnext: 17 });
+        assert_eq!(
+            st,
+            FolderState {
+                uidvalidity: 99,
+                uidnext: 17
+            }
+        );
         s.list_folders().unwrap();
         s.select("weird &!!- name").unwrap();
         let cmds: Vec<String> = server.commands().into_iter().map(|(_, c)| c).collect();
-        assert!(cmds.contains(&"EXAMINE \"Caixa de &AOcA4w-o\"".to_string()), "{cmds:?}");
-        assert!(cmds.contains(&"EXAMINE \"weird &!!- name\"".to_string()), "{cmds:?}");
+        assert!(
+            cmds.contains(&"EXAMINE \"Caixa de &AOcA4w-o\"".to_string()),
+            "{cmds:?}"
+        );
+        assert!(
+            cmds.contains(&"EXAMINE \"weird &!!- name\"".to_string()),
+            "{cmds:?}"
+        );
     }
 
     #[test]
@@ -535,10 +609,19 @@ mod source_tests {
         });
         let mut s = source(&server);
         assert_eq!(s.uids_after(10, None).unwrap(), Vec::<u32>::new());
-        assert_eq!(s.uids_after(5, Some(1_700_000_000)).unwrap(), vec![12, 20, 30]);
+        assert_eq!(
+            s.uids_after(5, Some(1_700_000_000)).unwrap(),
+            vec![12, 20, 30]
+        );
         let cmds: Vec<String> = server.commands().into_iter().map(|(_, c)| c).collect();
-        assert!(cmds.contains(&"UID SEARCH UID 11:*".to_string()), "{cmds:?}");
-        assert!(cmds.contains(&"UID SEARCH UID 6:* SINCE 14-Nov-2023".to_string()), "{cmds:?}");
+        assert!(
+            cmds.contains(&"UID SEARCH UID 11:*".to_string()),
+            "{cmds:?}"
+        );
+        assert!(
+            cmds.contains(&"UID SEARCH UID 6:* SINCE 14-Nov-2023".to_string()),
+            "{cmds:?}"
+        );
     }
 
     #[test]
@@ -546,7 +629,11 @@ mod source_tests {
         let server = Server::new(|_, cmd| {
             base(cmd).unwrap_or_else(|| {
                 let mut t = String::new();
-                t.push_str(&fetch_line(5, "\\Seen \\Recent $Label", "Subject: a\r\n\r\nhello"));
+                t.push_str(&fetch_line(
+                    5,
+                    "\\Seen \\Recent $Label",
+                    "Subject: a\r\n\r\nhello",
+                ));
                 t.push_str(&fetch_line(7, "", "Subject: b\r\n\r\nworld"));
                 t.push_str("{tag} OK done\r\n");
                 Reply::Text(t)
@@ -571,7 +658,10 @@ mod source_tests {
     fn fetch_errors_on_tagged_no() {
         let server = Server::new(|_, cmd| {
             base(cmd).unwrap_or_else(|| {
-                Reply::Text(format!("{}{{tag}} NO [SERVERBUG] fetch failed\r\n", fetch_line(5, "", "partial")))
+                Reply::Text(format!(
+                    "{}{{tag}} NO [SERVERBUG] fetch failed\r\n",
+                    fetch_line(5, "", "partial")
+                ))
             })
         });
         let mut s = source(&server);
@@ -603,7 +693,9 @@ mod source_tests {
         let server = Server::new(|conn, cmd| {
             base(cmd).unwrap_or_else(|| {
                 if cmd.starts_with("EXAMINE") {
-                    Reply::Text("* OK [UIDVALIDITY 1] v\r\n* OK [UIDNEXT 9] n\r\n{tag} OK ok\r\n".into())
+                    Reply::Text(
+                        "* OK [UIDVALIDITY 1] v\r\n* OK [UIDNEXT 9] n\r\n{tag} OK ok\r\n".into(),
+                    )
                 } else if conn == 1 {
                     Reply::Drop("* 5 FETCH (UID 5 BODY[] {50}\r\ntrunc".into())
                 } else {
@@ -615,8 +707,12 @@ mod source_tests {
         s.select("INBOX").unwrap();
         let m = s.fetch(&[5]).unwrap();
         assert_eq!(m[0].bytes, b"full".to_vec());
-        let on_conn2: Vec<String> =
-            server.commands().into_iter().filter(|(c, _)| *c == 2).map(|(_, c)| c).collect();
+        let on_conn2: Vec<String> = server
+            .commands()
+            .into_iter()
+            .filter(|(c, _)| *c == 2)
+            .map(|(_, c)| c)
+            .collect();
         assert!(on_conn2[1].starts_with("EXAMINE"), "{on_conn2:?}");
         assert!(on_conn2[2].starts_with("UID FETCH"), "{on_conn2:?}");
     }
@@ -658,16 +754,23 @@ mod source_tests {
         });
         let mut s = source(&server);
         let f = s.flags(&[5, 9]).unwrap();
-        assert_eq!(f, vec![(5, vec!["\\Seen".to_string(), "\\Flagged".to_string()]), (9, vec![])]);
+        assert_eq!(
+            f,
+            vec![
+                (5, vec!["\\Seen".to_string(), "\\Flagged".to_string()]),
+                (9, vec![])
+            ]
+        );
     }
 
     #[test]
     fn rejected_login_is_auth_error_after_one_attempt() {
-        let server = Server::new(|_, _| Reply::Text("{tag} NO [AUTHENTICATIONFAILED] nope\r\n".into()));
+        let server =
+            Server::new(|_, _| Reply::Text("{tag} NO [AUTHENTICATIONFAILED] nope\r\n".into()));
         let (sleep, slept) = no_sleep();
         let err = ImapSource::with_connector(
             Box::new(MockConnector(server.clone())),
-            &PasswordAuth::new("alice", "hunter2"),
+            Box::new(PasswordAuth::new("alice", "hunter2")),
             RetryPolicy::default(),
             sleep,
         )
@@ -679,8 +782,14 @@ mod source_tests {
 
     #[test]
     fn parse_message_id_handles_folding_and_case() {
-        assert_eq!(parse_message_id(b"message-id:\r\n <x@y>\r\n\r\n"), Some("x@y".into()));
-        assert_eq!(parse_message_id(b"Subject: s\r\nMESSAGE-ID: <a@b>\r\n"), Some("a@b".into()));
+        assert_eq!(
+            parse_message_id(b"message-id:\r\n <x@y>\r\n\r\n"),
+            Some("x@y".into())
+        );
+        assert_eq!(
+            parse_message_id(b"Subject: s\r\nMESSAGE-ID: <a@b>\r\n"),
+            Some("a@b".into())
+        );
         assert_eq!(parse_message_id(b"Subject: s\r\n"), None);
         assert_eq!(parse_message_id(b"Message-ID: <>\r\n"), None);
     }

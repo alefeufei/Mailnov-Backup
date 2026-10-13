@@ -22,7 +22,10 @@ fn seed_messages() -> Vec<Vec<u8>> {
     files
         .into_iter()
         .map(|p| {
-            let text = std::fs::read_to_string(p).unwrap().replace("\r\n", "\n").replace('\n', "\r\n");
+            let text = std::fs::read_to_string(p)
+                .unwrap()
+                .replace("\r\n", "\n")
+                .replace('\n', "\r\n");
             text.into_bytes()
         })
         .collect()
@@ -37,14 +40,19 @@ fn archive_from_dovecot() {
         env_or("MAILBACKUP_TEST_IMAP_USER", "testuser"),
         env_or("MAILBACKUP_TEST_IMAP_PASSWORD", "testpass"),
     );
-    let mut source = ImapSource::connect(&host, port, TlsMode::Implicit, &auth).unwrap();
+    let mut source = ImapSource::connect(&host, port, TlsMode::Implicit, Box::new(auth)).unwrap();
 
     let folders = source.list_folders().unwrap();
     assert!(folders.iter().any(|f| f == "INBOX"), "folders: {folders:?}");
 
     let dir = tempfile::tempdir().unwrap();
     let mut store = FsSqliteStore::open(dir.path()).unwrap();
-    let opts = ArchiveOptions { account: "dovecot".into(), folders: None, since: None, batch_size: 50 };
+    let opts = ArchiveOptions {
+        account: "dovecot".into(),
+        folders: None,
+        since: None,
+        batch_size: 50,
+    };
     let (tx, rx) = channel::<Event>();
     let summary = archive(&mut source, &mut store, &opts, &tx).unwrap();
     drop(tx);
@@ -57,7 +65,10 @@ fn archive_from_dovecot() {
     let stored = store.messages("dovecot").unwrap();
     for seed in &seeds {
         let hash = sha256_hex(seed);
-        assert!(stored.iter().any(|m| m.sha256 == hash), "seed with hash {hash} not archived");
+        assert!(
+            stored.iter().any(|m| m.sha256 == hash),
+            "seed with hash {hash} not archived"
+        );
         assert_eq!(&store.read_eml(&hash).unwrap(), seed);
     }
 
