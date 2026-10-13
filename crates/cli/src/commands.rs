@@ -31,20 +31,16 @@ pub fn run(cli: Cli) -> Result<i32> {
         }
         Command::Export { profile, to } => {
             let p = profiles.load(&profile)?;
-            let mut store = FsSqliteStore::open(&p.archive_dir)?;
+            check_target(&p, secrets.as_ref(), Some(to))?;
+            let mut store = open_existing(&p)?;
             let (summary, failures) = run_export(&p, secrets.as_ref(), &mut store, Some(to))?;
             Ok(finish(None, &summary, &failures))
         }
         Command::Migrate { profile } => {
             let p = profiles.load(&profile)?;
             p.since_epoch()?;
-            if p.target.is_none() {
-                return Err(Error::Config(format!(
-                    "profile '{}' has no export target; set one with `profile edit {0} --target-eml <dir>` \
-                     or --target-imap-host/--target-imap-user",
-                    p.name
-                )));
-            }
+            // Fail fast, before any network or disk work.
+            check_target(&p, secrets.as_ref(), None)?;
             let mut store = FsSqliteStore::open(&p.archive_dir)?;
             let (a, af) = run_archive(&p, secrets.as_ref(), &mut store)?;
             let ca = finish(Some("archive"), &a, &af);
@@ -54,7 +50,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         }
         Command::Verify { profile } => {
             let p = profiles.load(&profile)?;
-            let store = FsSqliteStore::open(&p.archive_dir)?;
+            let store = open_existing(&p)?;
             let r = store.verify()?;
             println!("checked: {}", r.checked);
             println!("missing: {}", r.missing.len());
@@ -73,14 +69,14 @@ pub fn run(cli: Cli) -> Result<i32> {
         }
         Command::Reindex { profile } => {
             let p = profiles.load(&profile)?;
-            let mut store = FsSqliteStore::open(&p.archive_dir)?;
+            let mut store = open_existing(&p)?;
             let n = store.reindex()?;
             println!("indexed {n} messages");
             Ok(EXIT_OK)
         }
         Command::Status { profile } => {
             let p = profiles.load(&profile)?;
-            let store = FsSqliteStore::open(&p.archive_dir)?;
+            let store = open_existing(&p)?;
             let mut per: BTreeMap<String, HashSet<String>> = BTreeMap::new();
             let mut unique: HashSet<String> = HashSet::new();
             for m in store.messages(&p.name)? {
@@ -94,6 +90,54 @@ pub fn run(cli: Cli) -> Result<i32> {
             }
             println!("total: {total} messages ({} unique)", unique.len());
             Ok(EXIT_OK)
+        }
+    }
+}
+
+/// Deletes both secrets first (idempotent), then the profile file, so a failing credential store
+/// never leaves orphaned credentials behind a vanished profile.
+fn remove_profile(name: &str, profiles: &ProfileStore, secrets: &dyn SecretStore) -> Result<()> {
+    mailbackup_core::profile::validate_name(name)?;
+    if !profiles.list()?.iter().any(|n| n == name) {
+        return Err(Error::Config(format!("profile '{name}' does not exist")));
+    }
+    secrets.delete(&secret_key(name, SecretRole::Source))?;
+    secrets.delete(&secret_key(name, SecretRole::Target))?;
+    profiles.remove(name)
+}
+
+/// Opens an archive that must already exist (only `archive`/`migrate` may create one).
+/// `archive.toml` is written when the store is created and survives deleting `index.db`.
+fn open_existing(p: &Profile) -> Result<FsSqliteStore> {
+    if !p.archive_dir.join("archive.toml").is_file() {
+        return Err(Error::Config(format!(
+            "no archive found at '{}'; run `archive {}` first or check the profile's archive_dir",
+            p.archive_dir.display(),
+            p.name
+        )));
+    }
+    FsSqliteStore::open(&p.archive_dir)
+}
+
+/// Validates the export target (exists, kind matches `want`, password available) without
+/// connecting or touching the archive.
+fn check_target(p: &Profile, secrets: &dyn SecretStore, want: Option<ExportTo>) -> Result<()> {
+    match (&p.target, want) {
+        (None, _) => Err(Error::Config(format!(
+            "profile '{0}' has no export target; set one with `profile edit {0} --target-eml <dir>` \
+             or --target-imap-host/--target-imap-user",
+            p.name
+        ))),
+        (Some(TargetSpec::EmlDir(_)), None | Some(ExportTo::Eml)) => Ok(()),
+        (Some(TargetSpec::Imap(_)), None | Some(ExportTo::Imap)) => {
+            password(secrets, &p.name, SecretRole::Target).map(|_| ())
+        }
+        (Some(t), Some(_)) => {
+            let have = if matches!(t, TargetSpec::Imap(_)) { "imap" } else { "eml" };
+            Err(Error::Config(format!(
+                "profile '{}' has a {have} target, which does not match --to",
+                p.name
+            )))
         }
     }
 }
@@ -188,11 +232,7 @@ fn profile_cmd(cmd: ProfileCmd, profiles: &ProfileStore, secrets: &dyn SecretSto
             Ok(EXIT_OK)
         }
         ProfileCmd::Rm { name } => {
-            profiles.remove(&name)?;
-            let a = secrets.delete(&secret_key(&name, SecretRole::Source));
-            let b = secrets.delete(&secret_key(&name, SecretRole::Target));
-            a?;
-            b?;
+            remove_profile(&name, profiles, secrets)?;
             println!("profile '{name}' removed (the archive directory was not touched)");
             Ok(EXIT_OK)
         }
@@ -461,15 +501,10 @@ fn run_export(
     store: &mut FsSqliteStore,
     want: Option<ExportTo>,
 ) -> Result<Outcome> {
-    let mut target: Box<dyn MailTarget> = match (&p.target, want) {
-        (None, _) => {
-            return Err(Error::Config(format!(
-                "profile '{}' has no export target",
-                p.name
-            )))
-        }
-        (Some(TargetSpec::EmlDir(d)), None | Some(ExportTo::Eml)) => Box::new(EmlDirTarget::new(d)),
-        (Some(TargetSpec::Imap(e)), None | Some(ExportTo::Imap)) => {
+    check_target(p, secrets, want)?;
+    let mut target: Box<dyn MailTarget> = match &p.target {
+        Some(TargetSpec::EmlDir(d)) => Box::new(EmlDirTarget::new(d)),
+        Some(TargetSpec::Imap(e)) => {
             let pw = password(secrets, &p.name, SecretRole::Target)?;
             Box::new(ImapTarget::connect(
                 &e.host,
@@ -478,17 +513,7 @@ fn run_export(
                 Box::new(PasswordAuth::new(&e.user, pw)),
             )?)
         }
-        (Some(t), Some(_)) => {
-            let have = if matches!(t, TargetSpec::Imap(_)) {
-                "imap"
-            } else {
-                "eml"
-            };
-            return Err(Error::Config(format!(
-                "profile '{}' has a {have} target, which does not match --to",
-                p.name
-            )));
-        }
+        None => unreachable!("check_target rejects a missing target"),
     };
     let (res, failures) = with_progress("export", |tx| {
         export(&mut *store, &mut *target, &p.name, &tx)
@@ -521,5 +546,48 @@ fn finish(heading: Option<&str>, s: &RunSummary, failures: &[Failure]) -> i32 {
         EXIT_PARTIAL
     } else {
         EXIT_OK
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mailbackup_core::MemorySecrets;
+
+    struct FailingDelete(MemorySecrets);
+    impl SecretStore for FailingDelete {
+        fn set(&self, k: &str, s: &str) -> Result<()> {
+            self.0.set(k, s)
+        }
+        fn get(&self, k: &str) -> Result<String> {
+            self.0.get(k)
+        }
+        fn delete(&self, _k: &str) -> Result<()> {
+            Err(Error::Config("store is locked".into()))
+        }
+    }
+
+    #[test]
+    fn rm_keeps_profile_when_secret_delete_fails() {
+        let d = tempfile::tempdir().unwrap();
+        let profiles = ProfileStore::new(d.path());
+        profiles
+            .save(&Profile {
+                name: "w".into(),
+                archive_dir: d.path().join("a"),
+                source: Endpoint {
+                    host: "h".into(),
+                    port: 993,
+                    tls: TlsMode::Implicit,
+                    user: "u".into(),
+                },
+                folders: None,
+                since: None,
+                target: None,
+            })
+            .unwrap();
+        let secrets = FailingDelete(MemorySecrets::new());
+        assert!(remove_profile("w", &profiles, &secrets).is_err());
+        assert!(profiles.load("w").is_ok());
     }
 }

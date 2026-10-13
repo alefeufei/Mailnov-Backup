@@ -144,16 +144,27 @@ fn profile_add_list_rm_cycle() {
         .assert()
         .failure()
         .code(1);
-    // rm does not delete the archive dir
-    FsSqliteStore::open(&e.archive).unwrap();
+}
+
+#[test]
+fn profile_rm_keeps_archive_files() {
+    let e = env();
+    add(&e, "home", &[]).success();
+    populate(&e, "home");
+    let before = walk_eml(&e.archive);
+    assert_eq!(before.len(), 3);
     cmd(&e).args(["profile", "rm", "home"]).assert().success();
-    assert!(e.archive.exists());
+    assert!(e.archive.join("archive.toml").is_file());
+    assert!(e.archive.join("index.db").is_file());
+    for f in &before {
+        assert!(f.is_file(), "{f:?}");
+    }
 }
 
 #[test]
 fn profile_add_rejects_password_in_args() {
     let e = env();
-    cmd(&e)
+    let a = cmd(&e)
         .args([
             "profile",
             "add",
@@ -168,12 +179,36 @@ fn profile_add_rejects_password_in_args() {
             "hunter2",
         ])
         .assert()
-        .failure();
-    cmd(&e)
-        .args(["profile", "set-password", "w", "--password", "hunter2"])
-        .assert()
-        .failure();
+        .failure()
+        .code(1);
+    assert!(
+        err(&a).contains("unexpected argument '--password'"),
+        "{}",
+        err(&a)
+    );
     assert!(!e.cfg.join("profiles").join("w.toml").exists());
+
+    // set-password on an EXISTING profile: only the flag can make it fail
+    add(&e, "ex", &[]).success();
+    let key = "mailbackup:ex:source";
+    let a = cmd(&e)
+        .args(["profile", "set-password", "ex", "--password", "hunter2"])
+        .write_stdin(
+            "changed
+",
+        )
+        .assert()
+        .failure()
+        .code(1);
+    assert!(
+        err(&a).contains("unexpected argument '--password'"),
+        "{}",
+        err(&a)
+    );
+    assert_eq!(
+        std::fs::read_to_string(secret_path(&e, key)).unwrap(),
+        "s3cret-pw"
+    );
 }
 
 #[test]
@@ -333,4 +368,91 @@ fn help_and_missing_profile() {
     let e = env();
     cmd(&e).arg("--help").assert().success();
     cmd(&e).args(["status", "nope"]).assert().failure().code(1);
+}
+
+fn assert_no_archive(e: &Env, a: &Assert) {
+    let msg = err(a);
+    let path = e.archive.display().to_string();
+    assert!(msg.contains(&path), "stderr should name {path}: {msg}");
+    assert!(!e.archive.exists(), "archive dir must not be created");
+}
+
+#[test]
+fn read_commands_on_missing_archive_fail_without_creating_it() {
+    let e = env();
+    add(&e, "w", &[]).success();
+    cmd(&e)
+        .args(["profile", "edit", "w", "--target-eml"])
+        .arg(e.cfg.join("eml-out"))
+        .assert()
+        .success();
+    for c in ["verify", "status", "reindex"] {
+        let a = cmd(&e).args([c, "w"]).assert().failure().code(1);
+        assert_no_archive(&e, &a);
+    }
+    let a = cmd(&e)
+        .args(["export", "w", "--to", "eml"])
+        .assert()
+        .failure()
+        .code(1);
+    assert_no_archive(&e, &a);
+}
+
+#[test]
+fn target_errors_leave_no_archive_behind() {
+    let e = env();
+    add(&e, "w", &[]).success();
+    // no target at all
+    cmd(&e)
+        .args(["export", "w", "--to", "eml"])
+        .assert()
+        .failure()
+        .code(1);
+    cmd(&e).args(["migrate", "w"]).assert().failure().code(1);
+    assert!(!e.archive.exists());
+    // kind mismatch
+    cmd(&e)
+        .args(["profile", "edit", "w", "--target-eml"])
+        .arg(e.cfg.join("eml-out"))
+        .assert()
+        .success();
+    cmd(&e)
+        .args(["export", "w", "--to", "imap"])
+        .assert()
+        .failure()
+        .code(1);
+    assert!(!e.archive.exists());
+}
+
+#[test]
+fn migrate_fails_fast_when_target_password_missing() {
+    let e = env();
+    add(&e, "w", &[]).success();
+    cmd(&e)
+        .args([
+            "profile",
+            "edit",
+            "w",
+            "--target-imap-host",
+            "t.example.com",
+            "--target-imap-user",
+            "tu",
+        ])
+        .assert()
+        .success();
+    let a = cmd(&e).args(["migrate", "w"]).assert().failure().code(1);
+    assert!(err(&a).contains("--target"), "{}", err(&a));
+    assert!(!e.archive.exists());
+}
+
+#[test]
+fn reindex_works_when_only_index_db_deleted() {
+    let e = env();
+    add(&e, "w", &[]).success();
+    populate(&e, "w");
+    for f in ["index.db", "index.db-wal", "index.db-shm"] {
+        let _ = std::fs::remove_file(e.archive.join(f));
+    }
+    assert!(e.archive.join("archive.toml").is_file());
+    cmd(&e).args(["reindex", "w"]).assert().success();
 }
