@@ -17,7 +17,7 @@
         <div class="logo-icon">M</div>
         <div>
           <div class="app-title">Mailnov Backup</div>
-          <div class="app-version">Versão 1.0 • Desktop</div>
+          <div class="app-version"><span id="app-version-label">Versão 1.1.0</span> • Desktop</div>
         </div>
       </div>
 
@@ -598,6 +598,7 @@
           <span class="modal-icon">🚀</span>
           <span>Operação em Andamento</span>
         </div>
+        <button class="modal-close" title="Minimizar (a operação continua em segundo plano)" onclick="minimizeProgressModal()">&minus;</button>
       </div>
       <div class="modal-body">
         <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: 500; margin-bottom: 6px;">
@@ -640,6 +641,7 @@
         </div>
       </div>
       <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" onclick="minimizeProgressModal()">Minimizar</button>
         <button class="btn btn-danger btn-sm" id="btn-cancel-job" onclick="cancelCurrentJob()">Cancelar Operação</button>
         <button class="btn btn-secondary btn-sm" id="btn-close-progress" style="display: none;" onclick="closeProgressModal()">Fechar</button>
       </div>
@@ -753,6 +755,8 @@
     </div>
   </div>
 
+  <script src="/static/js/icons.js"></script>
   <script src="/static/js/app.js"></script>
+<div id="job-dock" class="job-dock"></div>
 </body>
 </html>

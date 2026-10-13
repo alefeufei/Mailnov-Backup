@@ -1,7 +1,6 @@
 // MailStore Backup Studio - Frontend JavaScript
 
 let currentActiveTab = "tab-dashboard";
-let currentPollingJob = null;
 let currentExportTarget = "imap";
 let activeViewerEmailId = null;
 let lastSelectedExportProfile = "";
@@ -124,6 +123,8 @@ async function loadSystemStatus() {
   try {
     const res = await fetch("/api/status");
     const data = await res.json();
+    const versionLabel = document.getElementById("app-version-label");
+    if (versionLabel && data.version) versionLabel.textContent = `Versão ${data.version}`;
     const pstBadge = document.getElementById("dash-pst-badge");
     const sidebarPst = document.getElementById("sidebar-pst-status");
 
@@ -164,7 +165,7 @@ async function loadDashboardData() {
       <tr>
         <td>${formatDate(l.started_at)}</td>
         <td><strong>${l.action.toUpperCase()}</strong></td>
-        <td>${l.profile_id}</td>
+        <td title="${escapeHtml(l.profile_username || l.profile_id)}">${escapeHtml(l.profile_name || l.profile_id)}</td>
         <td><span class="status-dot" style="background-color: ${l.status === 'success' ? 'var(--success)' : (l.status === 'error' ? 'var(--danger)' : 'var(--warning)')}"></span> ${l.status}</td>
         <td>${l.messages_count || 0}</td>
         <td>${l.errors_count || 0}</td>
@@ -237,6 +238,8 @@ function openProfileModal(profile = null) {
   document.getElementById("prof-ssl").value = profile ? profile.imap.ssl_mode : "SSL";
   document.getElementById("prof-since-date").value = profile ? (profile.since_date || "") : "";
   document.getElementById("test-conn-feedback").textContent = "";
+  document.getElementById("prof-folders-checklist").innerHTML =
+    `<span style="color: var(--text-muted);">Clique em 'Testar Conexão' acima para listar as pastas disponíveis no servidor.</span>`;
 
   document.getElementById("modal-profile-title").textContent = profile ? "Editar Perfil IMAP" : "Adicionar Novo Perfil IMAP";
   document.getElementById("modal-profile").classList.add("active");
@@ -395,107 +398,153 @@ async function runBackupProfile(profileId) {
       await showCustomAlert("Erro no Backup", "Erro ao iniciar backup: " + (err.detail || "Falha na conexão"), "❌");
       return;
     }
-    openProgressModal("Backup IMAP em Andamento", "backup", profileId);
+    let name = profileId;
+    try { name = (await (await fetch(`/api/profiles/${profileId}`)).json()).name || name; } catch (e) {}
+    openProgressModal(`Backup: ${name}`, "backup", profileId);
   } catch (err) {
     await showCustomAlert("Erro de Comunicação", "Erro de comunicação: " + err.message, "❌");
   }
 }
 
-function openProgressModal(title, jobType, targetId) {
-  const titleElem = document.getElementById("progress-modal-title");
-  if (titleElem) {
-    titleElem.innerHTML = `<span class="modal-icon">${jobType === "backup" ? "📥" : "🚀"}</span> <span>${title}</span>`;
-  }
-  document.getElementById("progress-bar-fill").style.width = "0%";
-  document.getElementById("progress-percent-label").textContent = "0%";
-  document.getElementById("prog-stat-processed").textContent = "0 / 0";
-  document.getElementById("prog-stat-success").textContent = "0";
-  document.getElementById("prog-stat-errors").textContent = "0";
-  document.getElementById("progress-log-terminal").innerHTML = "";
-  document.getElementById("btn-cancel-job").style.display = "inline-flex";
-  document.getElementById("btn-close-progress").style.display = "none";
-  document.getElementById("modal-progress").classList.add("active");
+// Registro de jobs em segundo plano: vários podem rodar em paralelo.
+const backgroundJobs = {};
+let viewedJobKey = null;
 
-  if (currentPollingJob) clearInterval(currentPollingJob);
-
-  currentPollingJob = setInterval(async () => {
-    try {
-      let url = jobType === "backup" ? `/api/profiles/${targetId}/progress` : "/api/jobs/export/progress";
-      const res = await fetch(url);
-      const data = await res.json();
-
-      document.getElementById("progress-bar-fill").style.width = `${data.percent || 0}%`;
-      document.getElementById("progress-percent-label").textContent = `${data.percent || 0}%`;
-      
-      if (jobType === "backup") {
-        const curMsg = data.current_msg || 0;
-        const totMsgs = data.total_msgs || 0;
-        const errCount = data.error_count || 0;
-        const succCount = curMsg >= errCount ? (curMsg - errCount) : curMsg;
-        document.getElementById("progress-details-current").textContent = `Pasta: ${data.current_folder || '-'} (${curMsg}/${totMsgs})`;
-        document.getElementById("progress-speed").textContent = `${data.speed_mps || 0} msgs/s`;
-        document.getElementById("prog-stat-processed").textContent = `${curMsg} / ${totMsgs}`;
-        document.getElementById("prog-stat-success").textContent = succCount;
-        document.getElementById("prog-stat-errors").textContent = errCount;
-      } else {
-        const curIdx = data.current_index || 0;
-        const totMsgs = data.total_messages || 0;
-        const succCount = data.success_count || 0;
-        const errCount = data.error_count || 0;
-        document.getElementById("progress-details-current").textContent = `Progresso: ${curIdx}/${totMsgs}`;
-        document.getElementById("progress-speed").textContent = data.current_subject ? data.current_subject.substring(0, 30) : "";
-        document.getElementById("prog-stat-processed").textContent = `${curIdx} / ${totMsgs}`;
-        document.getElementById("prog-stat-success").textContent = succCount;
-        document.getElementById("prog-stat-errors").textContent = errCount;
-      }
-
-      // Logs
-      if (data.logs) {
-        document.getElementById("progress-log-terminal").innerHTML = data.logs.join("<br>");
-        const term = document.getElementById("progress-log-terminal");
-        term.scrollTop = term.scrollHeight;
-      }
-
-      // Finalização
-      if (data.status !== "running") {
-        clearInterval(currentPollingJob);
-        currentPollingJob = null;
-        document.getElementById("btn-cancel-job").style.display = "none";
-        document.getElementById("btn-close-progress").style.display = "inline-flex";
-
-        const statusDescElem = document.getElementById("progress-status-desc");
-        if (data.status === "success") {
-          const count = data.success_count !== undefined ? data.success_count : (data.total_messages || data.total_msgs || 0);
-          statusDescElem.innerHTML = `<span style="color: var(--success); font-weight: 600;">✅ Concluído com sucesso! (${count} e-mails processados)</span>`;
-        } else if (data.status === "partial") {
-          statusDescElem.innerHTML = `<span style="color: #d97706; font-weight: 600;">⚠️ Concluído com avisos: ${data.success_count || 0} enviados, ${data.error_count || 0} falhas.</span>`;
-        } else if (data.status === "warning") {
-          statusDescElem.innerHTML = `<span style="color: #d97706; font-weight: 600;">⚠️ Atenção: Nenhuma mensagem encontrada com os filtros selecionados.</span>`;
-        } else if (data.status === "cancelled") {
-          statusDescElem.innerHTML = `<span style="color: var(--text-muted); font-weight: 600;">⏹️ Operação cancelada pelo usuário.</span>`;
-        } else {
-          statusDescElem.innerHTML = `<span style="color: var(--danger); font-weight: 600;">❌ Falha na operação (${data.error_count || 0} erros). Nenhuma mensagem foi transferida.</span>`;
-        }
-
-        loadDashboardData();
-        loadProfiles();
-        loadFoldersTree();
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  }, 750);
+function jobKeyOf(jobType, targetId) {
+  return jobType === "backup" ? `backup:${targetId}` : "export";
 }
 
-function closeProgressModal() {
-  if (currentPollingJob) clearInterval(currentPollingJob);
-  currentPollingJob = null;
+// Inicia o acompanhamento minimizado (chip no dock); o log só abre ao clicar.
+function openProgressModal(title, jobType, targetId) {
+  const key = jobKeyOf(jobType, targetId);
+  if (backgroundJobs[key] && backgroundJobs[key].poller) clearInterval(backgroundJobs[key].poller);
+  const job = { key, title, jobType, targetId, data: { percent: 0, status: "running", logs: [] }, poller: null };
+  backgroundJobs[key] = job;
+  job.poller = setInterval(() => pollJob(job), 1000);
+  pollJob(job);
+  renderJobDock();
+}
+
+async function pollJob(job) {
+  try {
+    const url = job.jobType === "backup" ? `/api/profiles/${job.targetId}/progress` : "/api/jobs/export/progress";
+    const res = await fetch(url);
+    job.data = await res.json();
+  } catch (err) {
+    console.error(err);
+    return;
+  }
+  if (job.data.status !== "running" && job.poller) {
+    clearInterval(job.poller);
+    job.poller = null;
+    loadDashboardData();
+    loadProfiles();
+    loadFoldersTree();
+  }
+  renderJobDock();
+  if (viewedJobKey === job.key) renderProgressModal(job);
+}
+
+function renderJobDock() {
+  const dock = document.getElementById("job-dock");
+  if (!dock) return;
+  const icons = { running: "⏳", success: "✅", partial: "⚠️", warning: "⚠️", cancelled: "⏹️", error: "❌" };
+  dock.innerHTML = Object.values(backgroundJobs).map(job => {
+    const d = job.data;
+    const pct = d.percent || 0;
+    const running = d.status === "running";
+    return `<div class="job-chip ${running ? "" : "job-done"}" onclick="viewJob('${job.key}')" title="Clique para ver o log">
+      <div class="job-chip-top"><span>${icons[d.status] || "⏳"} ${escapeHtml(job.title)}</span><b>${pct}%</b>
+      ${running ? "" : `<span class="job-chip-x" onclick="event.stopPropagation(); dismissJob('${job.key}')">&times;</span>`}</div>
+      <div class="job-chip-bar"><div style="width:${pct}%"></div></div></div>`;
+  }).join("");
+}
+
+function dismissJob(key) {
+  delete backgroundJobs[key];
+  if (viewedJobKey === key) minimizeProgressModal();
+  renderJobDock();
+}
+
+function viewJob(key) {
+  const job = backgroundJobs[key];
+  if (!job) return;
+  viewedJobKey = key;
+  document.getElementById("progress-modal-title").innerHTML =
+    `<span class="modal-icon">${job.jobType === "backup" ? "📥" : "🚀"}</span> <span>${escapeHtml(job.title)}</span>`;
+  document.getElementById("modal-progress").classList.add("active");
+  renderProgressModal(job);
+}
+
+function renderProgressModal(job) {
+  const data = job.data;
+  const set = (id, v) => { document.getElementById(id).textContent = v; };
+  const pct = data.percent || 0;
+  document.getElementById("progress-bar-fill").style.width = `${pct}%`;
+  set("progress-percent-label", `${pct}%`);
+  let cur, tot;
+  if (job.jobType === "backup") {
+    cur = data.current_msg || 0; tot = data.total_msgs || 0;
+    set("progress-details-current", `Pasta: ${data.current_folder || "-"} (${cur}/${tot})`);
+    set("progress-speed", `${data.speed_mps || 0} msgs/s`);
+    set("prog-stat-success", data.synced_count || 0);
+  } else {
+    cur = data.current_index || 0; tot = data.total_messages || 0;
+    set("progress-details-current", `Progresso: ${cur}/${tot}`);
+    set("progress-speed", data.current_subject ? data.current_subject.substring(0, 30) : "");
+    set("prog-stat-success", data.success_count || 0);
+  }
+  set("prog-stat-processed", `${cur} / ${tot}`);
+  set("prog-stat-errors", data.error_count || 0);
+
+  const term = document.getElementById("progress-log-terminal");
+  if (data.logs) {
+    term.innerHTML = data.logs.map(escapeHtml).join("<br>");
+    term.scrollTop = term.scrollHeight;
+  }
+
+  const running = data.status === "running";
+  document.getElementById("btn-cancel-job").style.display = running ? "inline-flex" : "none";
+  document.getElementById("btn-close-progress").style.display = running ? "none" : "inline-flex";
+  const el = document.getElementById("progress-status-desc");
+  if (running) {
+    el.textContent = job.cancelRequested ? "Cancelamento solicitado..." : "Processando mensagens...";
+  } else if (data.status === "success") {
+    const count = data.success_count !== undefined ? data.success_count : (data.total_messages || data.synced_count || 0);
+    el.innerHTML = `<span style="color: var(--success); font-weight: 600;">✅ Concluído com sucesso! (${count} e-mails processados)</span>`;
+  } else if (data.status === "partial") {
+    el.innerHTML = `<span style="color: #d97706; font-weight: 600;">⚠️ Concluído com avisos: ${data.success_count ?? data.synced_count ?? 0} processados, ${data.error_count || 0} falhas.</span>`;
+  } else if (data.status === "warning") {
+    el.innerHTML = `<span style="color: #d97706; font-weight: 600;">⚠️ Atenção: Nenhuma mensagem encontrada com os filtros selecionados.</span>`;
+  } else if (data.status === "cancelled") {
+    el.innerHTML = `<span style="color: var(--text-muted); font-weight: 600;">⏹️ Operação cancelada pelo usuário.</span>`;
+  } else {
+    el.innerHTML = `<span style="color: var(--danger); font-weight: 600;">❌ Falha na operação (${data.error_count || 0} erros).</span>`;
+  }
+}
+
+// Esconde o modal; o job continua rodando e aparece no dock.
+function minimizeProgressModal() {
+  viewedJobKey = null;
   document.getElementById("modal-progress").classList.remove("active");
 }
 
+// "Fechar" após terminar: minimiza e remove o chip concluído.
+function closeProgressModal() {
+  const key = viewedJobKey;
+  minimizeProgressModal();
+  if (key && backgroundJobs[key] && backgroundJobs[key].data.status !== "running") dismissJob(key);
+}
+
 async function cancelCurrentJob() {
-  await fetch("/api/jobs/export/cancel", { method: "POST" });
-  document.getElementById("progress-status-desc").textContent = "Cancelamento solicitado...";
+  const job = backgroundJobs[viewedJobKey];
+  if (!job) return;
+  const url = job.jobType === "backup" ? `/api/profiles/${job.targetId}/cancel` : "/api/jobs/export/cancel";
+  try {
+    const res = await fetch(url, { method: "POST" });
+    if (res.ok) job.cancelRequested = true;
+  } catch (err) { console.error(err); }
+  renderProgressModal(job);
 }
 
 // 4. Pesquisar E-mails
@@ -1214,7 +1263,7 @@ async function loadFullLogs() {
       <tr>
         <td>${formatDate(l.started_at)}</td>
         <td><strong>${l.action.toUpperCase()}</strong></td>
-        <td>${l.profile_id}</td>
+        <td title="${escapeHtml(l.profile_username || l.profile_id)}">${escapeHtml(l.profile_name || l.profile_id)}</td>
         <td><span class="status-dot" style="background-color: ${getStatusColor(l.status)}"></span> ${l.status}</td>
         <td>${l.messages_count}</td>
         <td>${escapeHtml(l.details || '')}</td>

@@ -10,7 +10,7 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 from mailstore.config import STORAGE_DIR
 from mailstore.database import Database
 from mailstore.models import BackupProfile, FolderInfo, ImapConfig
-from mailstore.parser import ParsedEmail
+from mailstore.parser import ParsedEmail, clean_html_to_text
 
 
 def decode_imap_utf7(s: str) -> str:
@@ -505,8 +505,9 @@ class BackupRunner:
                         total_errors_this_run += 1
                         progress.error_count += 1
 
-                # Atualiza estatísticas da pasta
-                db.update_folder_stats(profile.id, folder_name, max_uid_seen)
+                # Atualiza estatísticas da pasta (não em caso de cancelamento parcial)
+                if not progress.is_cancelled:
+                    db.update_folder_stats(profile.id, folder_name, max_uid_seen)
 
             # Finalização
             finished_at = datetime.now().isoformat()

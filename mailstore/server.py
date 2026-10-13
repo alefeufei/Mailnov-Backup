@@ -1,6 +1,7 @@
 """Servidor REST API e servidor web embutido do MailStore Backup."""
 
 import asyncio
+from mailstore import __version__
 import os
 import subprocess
 import sys
@@ -40,7 +41,7 @@ from mailstore.verifier import ArchiveVerifier
 app = FastAPI(
     title="Mailnov Backup",
     description="Sistema profissional de arquivamento, backup e migração de e-mails IMAP",
-    version="1.0.0"
+    version=__version__
 )
 
 # CORS liberado para interface local
@@ -73,6 +74,7 @@ def get_system_status():
     pst_ok, pst_msg = is_outlook_com_available()
     return {
         "status": "online",
+        "version": __version__,
         "data_dir": str(BASE_DIR),
         "db_size_bytes": os.path.getsize(db.db_path) if db.db_path.exists() else 0,
         "pst_support": {

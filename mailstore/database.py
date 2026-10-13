@@ -693,7 +693,9 @@ class Database:
 
     def get_logs(self, limit: int = 50) -> List[dict]:
         with self.get_connection() as conn:
-            cur = conn.execute("SELECT * FROM sync_logs ORDER BY id DESC LIMIT ?", (limit,))
+            cur = conn.execute("SELECT l.*, p.name AS profile_name, p.username AS profile_username "
+                "FROM sync_logs l LEFT JOIN profiles p ON p.id = l.profile_id "
+                "ORDER BY l.id DESC LIMIT ?", (limit,))
             return [dict(row) for row in cur.fetchall()]
 
     def get_system_stats(self) -> dict:
