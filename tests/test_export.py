@@ -144,6 +144,13 @@ class TestExportEngine(unittest.TestCase):
         # 5. Subpasta arbitrária
         self.assertEqual(resolve_target_folder("INBOX.Clientes.2026", "/", "Restaurado", existing), "Restaurado/Clientes/2026")
 
+        # 6. Servidor Dovecot com namespace INBOX. obrigatório
+        dovecot_existing = {"inbox": "INBOX", "inbox.sent": "INBOX.Sent", "inbox.trash": "INBOX.Trash"}
+        self.assertEqual(resolve_target_folder("INBOX.Sent", ".", None, dovecot_existing, "INBOX."), "INBOX.Sent")
+        self.assertEqual(resolve_target_folder("INBOX.Sent", ".", "Restaurado", dovecot_existing, "INBOX."), "INBOX.Restaurado.Sent")
+        self.assertEqual(resolve_target_folder("INBOX", ".", "Restaurado", dovecot_existing, "INBOX."), "INBOX.Restaurado.INBOX")
+        self.assertEqual(resolve_target_folder("INBOX.Outra", ".", None, dovecot_existing, "INBOX."), "INBOX.Outra")
+
 
 if __name__ == "__main__":
     unittest.main()

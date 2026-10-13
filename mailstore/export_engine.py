@@ -9,7 +9,7 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 from mailstore.config import STORAGE_DIR
 from mailstore.database import Database
 from mailstore.imap_engine import (
@@ -88,52 +88,115 @@ def format_internal_date(date_str: Optional[str]) -> Optional[str]:
     return None
 
 
+def detect_target_namespace(client: ImapClient, dest_folders_list: List[dict]) -> Tuple[str, str]:
+    """Detecta o prefixo de namespace (ex: 'INBOX.' ou '') e delimitador (ex: '.' ou '/') do destino."""
+    prefix = ""
+    delim = "/"
+
+    # 1. Delimitador a partir da lista
+    for f in dest_folders_list:
+        d = f.get("delim")
+        if d and d not in ('NIL', '""'):
+            delim = d
+            break
+
+    # 2. Tenta comando IMAP NAMESPACE (RFC 2342)
+    try:
+        typ, dat = client.conn.namespace()
+        if typ == "OK" and dat and dat[0]:
+            raw = dat[0].decode("latin1", errors="replace") if isinstance(dat[0], bytes) else str(dat[0])
+            m = re.search(r'\(\s*\(\s*"([^"]*)"\s+"([^"]+)"', raw)
+            if m:
+                p = m.group(1)
+                d = m.group(2)
+                if p:
+                    prefix = p
+                if d and d not in ('NIL', '""'):
+                    delim = d
+                return prefix, delim
+    except Exception:
+        pass
+
+    # 3. Analisa se as pastas existentes (exceto INBOX) exigem prefixo INBOX.
+    subfolders = [f["name"] for f in dest_folders_list if f["name"].upper() != "INBOX"]
+    if subfolders and any(f.upper().startswith(f"INBOX{delim}") for f in subfolders):
+        prefix = f"INBOX{delim}"
+
+    return prefix, delim
+
+
 def resolve_target_folder(
     source_folder: str,
     target_delim: str,
     target_prefix: Optional[str],
-    existing_dest_map: dict
+    existing_dest_map: dict,
+    ns_prefix: str = ""
 ) -> str:
-    """Determina o nome correspondente da pasta no destino, adaptando delimitadores e prefixos."""
+    """Determina o nome correspondente da pasta no destino, adaptando delimitadores, prefixos e namespace."""
     is_inbox = source_folder.upper() == "INBOX"
 
+    # Se houver prefixo de restauração/exportação customizado (ex: Restaurado_Mailnov)
     if target_prefix:
         prefix_clean = target_prefix.strip("/. ")
         if is_inbox:
-            return f"{prefix_clean}{target_delim}INBOX"
+            base_folder = f"{prefix_clean}{target_delim}INBOX"
+        else:
+            sub = source_folder
+            if sub.upper().startswith("INBOX.") or sub.upper().startswith("INBOX/"):
+                sub = sub[6:]
+            sub_conv = sub.replace("/", target_delim).replace(".", target_delim)
+            base_folder = f"{prefix_clean}{target_delim}{sub_conv}"
 
-        # Remove prefixo INBOX da origem caso exista
-        sub = source_folder
-        if sub.upper().startswith("INBOX."):
-            sub = sub[6:]
-        elif sub.upper().startswith("INBOX/"):
-            sub = sub[6:]
+        if ns_prefix and not base_folder.upper().startswith(ns_prefix.upper()):
+            return f"{ns_prefix}{base_folder}"
+        return base_folder
 
-        sub_conv = sub.replace("/", target_delim).replace(".", target_delim)
-        return f"{prefix_clean}{target_delim}{sub_conv}"
-
+    # Sem prefixo customizado
     if is_inbox:
         return "INBOX"
 
     sub = source_folder
-    if sub.upper().startswith("INBOX."):
-        sub = sub[6:]
-    elif sub.upper().startswith("INBOX/"):
+    if sub.upper().startswith("INBOX.") or sub.upper().startswith("INBOX/"):
         sub = sub[6:]
 
     sub_conv = sub.replace("/", target_delim).replace(".", target_delim)
     sub_lower = sub_conv.lower()
 
+    # 1. Verifica se já existe diretamente no destino (ex: 'sent' ou 'trash')
     if sub_lower in existing_dest_map:
         return existing_dest_map[sub_lower]
 
-    inbox_sub = f"inbox{target_delim}{sub_lower}"
-    if inbox_sub in existing_dest_map:
-        return existing_dest_map[inbox_sub]
+    # 2. Verifica se existe com o namespace do destino (ex: 'inbox.sent' ou 'inbox.trash')
+    if ns_prefix:
+        ns_cand = f"{ns_prefix}{sub_conv}".lower()
+        if ns_cand in existing_dest_map:
+            return existing_dest_map[ns_cand]
+    else:
+        inbox_cand = f"inbox{target_delim}{sub_lower}"
+        if inbox_cand in existing_dest_map:
+            return existing_dest_map[inbox_cand]
 
-    has_inbox_prefix = any(k.startswith(f"inbox{target_delim}") for k in existing_dest_map.keys())
-    if has_inbox_prefix:
-        return f"INBOX{target_delim}{sub_conv}"
+    # 3. Mapeamento de pastas comuns se o destino tiver nomes correspondentes
+    canon_map = {
+        "sent": ["sent", "itens enviados", "enviados", "enviadas"],
+        "trash": ["trash", "lixeira", "itens excluídos", "itens excluidos"],
+        "drafts": ["drafts", "rascunhos"],
+        "junk": ["junk", "spam", "lixo eletrônico", "lixo eletronico"],
+        "spam": ["spam", "junk", "lixo eletrônico", "lixo eletronico"]
+    }
+    for orig_key, aliases in canon_map.items():
+        if sub_lower in aliases:
+            for alias in aliases:
+                key_direct = alias
+                key_ns = f"{ns_prefix}{alias}".lower() if ns_prefix else f"inbox{target_delim}{alias}".lower()
+                if key_direct in existing_dest_map:
+                    return existing_dest_map[key_direct]
+                if key_ns in existing_dest_map:
+                    return existing_dest_map[key_ns]
+
+    # 4. Se o servidor de destino exige namespace (ex: 'INBOX.')
+    if ns_prefix and not sub_conv.upper().startswith(ns_prefix.upper()):
+        return f"{ns_prefix}{sub_conv}"
 
     return sub_conv
 
@@ -157,7 +220,7 @@ def ensure_imap_hierarchy(
     for part in parts:
         current = f"{current}{delim}{part}" if current else part
         current_lower = current.lower()
-        if current_lower in cache:
+        if current_lower == "inbox" or current_lower in cache:
             continue
 
         encoded = encode_imap_utf7(current)
@@ -180,7 +243,7 @@ def ensure_imap_hierarchy(
                         progress.add_log(f"Pasta criada no destino: {current}")
                 else:
                     cache.add(current_lower)
-        except Exception as e:
+        except Exception:
             cache.add(current_lower)
     return True
 
@@ -250,18 +313,16 @@ class ExportEngine:
             client.connect()
             progress.add_log("Autenticação com o servidor de destino bem-sucedida.")
 
-            # Descobre pastas existentes e delimitador no destino
+            # Descobre pastas existentes, delimitador e namespace no destino
             dest_folders_list = client.list_folders()
             existing_dest_folders = {f["name"].lower(): f["raw_name"] for f in dest_folders_list}
 
-            target_delim = "/"
-            for f in dest_folders_list:
-                d = f.get("delim")
-                if d and d not in ('NIL', '""'):
-                    target_delim = d
-                    break
-
-            progress.add_log(f"Delimitador detectado no servidor destino: '{target_delim}'. Pastas no destino: {len(dest_folders_list)}.")
+            ns_prefix, target_delim = detect_target_namespace(client, dest_folders_list)
+            if ns_prefix:
+                progress.add_log(f"Namespace detectado no servidor destino: '{ns_prefix}' (delimitador: '{target_delim}').")
+            else:
+                progress.add_log(f"Delimitador detectado no servidor destino: '{target_delim}'.")
+            progress.add_log(f"Pastas existentes no destino: {len(dest_folders_list)}.")
             progress.add_log(f"Iniciando transferência de {total} mensagem(ns)...")
 
             created_folders_cache = {f["name"].lower() for f in dest_folders_list}
@@ -278,12 +339,13 @@ class ExportEngine:
                 progress.current_folder = msg["folder"]
                 progress.current_subject = msg["subject"] or "(Sem assunto)"
 
-                # Determina pasta de destino com tradução de hierarquia
+                # Determina pasta de destino com tradução de hierarquia e namespace
                 folder_dest = resolve_target_folder(
                     msg["folder"],
                     target_delim,
                     req.target_folder_prefix,
-                    existing_dest_folders
+                    existing_dest_folders,
+                    ns_prefix
                 )
 
                 # Garante que toda a árvore de pastas pai/filho exista
@@ -326,10 +388,27 @@ class ExportEngine:
                         raw_bytes
                     )
 
+                    # Trata erro de namespace do Dovecot ("Client tried to access nonexistent namespace. (Mailbox name should probably be prefixed with: INBOX.)")
+                    resp_str = str(resp).upper()
+                    if typ != "OK" and ("NONEXISTENT NAMESPACE" in resp_str or "PREFIXED WITH: INBOX" in resp_str or "NAMESPACE" in resp_str):
+                        ns_prefix = f"INBOX{target_delim}"
+                        if not folder_dest.upper().startswith(ns_prefix.upper()):
+                            folder_dest = f"{ns_prefix}{folder_dest}"
+                        progress.add_log(f"Prefixo '{ns_prefix}' exigido pelo servidor. Reenviando mensagem #{msg['id']} para '{folder_dest}'...")
+                        ensure_imap_hierarchy(client, folder_dest, target_delim, created_folders_cache, progress)
+                        enc_f = encode_imap_utf7(folder_dest)
+                        folder_arg = f'"{enc_f}"' if " " in enc_f or not enc_f.isalnum() else enc_f
+                        typ, resp = client.conn.append(
+                            folder_arg,
+                            flags_to_send,
+                            internal_date_val,
+                            raw_bytes
+                        )
+
                     # Se falhar com TRYCREATE, força criação recursiva e retenta
                     if typ != "OK":
                         resp_text = str(resp).upper()
-                        if "TRYCREATE" in resp_text or "DOES NOT EXIST" in resp_text or "NONEXISTENT" in resp_text:
+                        if "TRYCREATE" in resp_text or "DOES NOT EXIST" in resp_text:
                             ensure_imap_hierarchy(client, folder_dest, target_delim, created_folders_cache, progress)
                             typ, resp = client.conn.append(
                                 folder_arg,
@@ -338,9 +417,9 @@ class ExportEngine:
                                 raw_bytes
                             )
 
-                    # Se ainda recusado e for subpasta, tenta salvar na INBOX como fallback
+                    # Se ainda recusado e for subpasta, tenta salvar na INBOX como fallback de segurança
                     if typ != "OK" and folder_dest.upper() != "INBOX":
-                        progress.add_log(f"Pasta '{folder_dest}' não aceitou mensagem #{msg['id']} ({resp}). Tentando gravar na INBOX principal...")
+                        progress.add_log(f"Pasta '{folder_dest}' não aceitou mensagem #{msg['id']} ({resp}). Gravando na INBOX principal como fallback de segurança...")
                         typ_inbox, resp_inbox = client.conn.append(
                             "INBOX",
                             flags_to_send,
@@ -349,7 +428,7 @@ class ExportEngine:
                         )
                         if typ_inbox == "OK":
                             typ = "OK"
-                            progress.add_log(f"Mensagem #{msg['id']} salva na INBOX de destino após recusa da subpasta.")
+                            progress.add_log(f"Mensagem #{msg['id']} salva com sucesso na INBOX após fallback.")
 
                     if typ == "OK":
                         progress.success_count += 1
