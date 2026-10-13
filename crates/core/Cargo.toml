@@ -8,9 +8,12 @@ testing = []
 
 [dependencies]
 mail-parser = "0.11.9"
+imap-proto = "0.16.7"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.10"
 thiserror = "1"
+# TLS backend: rustls (via imap rustls-tls, OS root store, certificate validation always on); imap 3.0 is alpha but is the only release with rustls/STARTTLS builder.
+imap = { version = "=3.0.0-alpha.15", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
@@ -18,4 +21,8 @@ proptest = "1"
 
 [[test]]
 name = "archive_engine"
+required-features = ["testing"]
+
+[[test]]
+name = "imap_dovecot"
 required-features = ["testing"]

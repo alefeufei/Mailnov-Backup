@@ -1,0 +1,12 @@
+# Skeleton for the ImapSource integration test (UNTESTED: written without Docker available; Task 8 finishes it).
+services:
+  dovecot:
+    image: dovecot/dovecot:latest
+    ports:
+      - "993:993"
+    volumes:
+      # Provide: conf.d/ overrides (imaps on 993, passwd-file user testuser/testpass,
+      # ssl_cert/ssl_key for CN=localhost) and the seed messages loaded into the INBOX.
+      - ./conf:/etc/dovecot/conf.d:ro
+      - ./certs:/certs:ro
+      - ./seed:/seed:ro
