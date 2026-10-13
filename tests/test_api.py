@@ -89,6 +89,14 @@ class TestRestApi(unittest.TestCase):
         data = res.json()
         self.assertIsInstance(data, list)
 
+    def test_fs_browse_endpoint(self):
+        res = self.client.get("/api/fs/browse")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("current_path", data)
+        self.assertIn("shortcuts", data)
+        self.assertIn("directories", data)
+
 
 if __name__ == "__main__":
     unittest.main()

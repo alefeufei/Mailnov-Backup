@@ -684,6 +684,55 @@
     </div>
   </div>
 
+  <!-- MODAL: Explorador de Pastas e Arquivos Integrado -->
+  <div class="modal-overlay" id="modal-fs-picker" style="z-index: 1050;">
+    <div class="modal-box" style="width: 650px; max-width: 95vw;">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span class="modal-icon" id="fs-modal-icon">📁</span>
+          <span id="fs-modal-title">Selecionar Pasta de Destino</span>
+        </div>
+        <button class="modal-close" onclick="closeFsPickerModal()">&times;</button>
+      </div>
+      <div class="modal-body" style="padding: 16px 20px;">
+        <!-- Atalhos e Unidades -->
+        <div class="fs-picker-shortcuts" id="fs-shortcuts-container"></div>
+
+        <!-- Barra de Navegação de Caminho -->
+        <div class="fs-path-bar">
+          <button type="button" class="btn btn-secondary btn-sm" id="fs-btn-up" onclick="fsNavigateUp()" title="Subir um nível">
+            ⬆️ Subir
+          </button>
+          <input type="text" id="fs-input-path" class="form-control" style="flex: 1; font-size: 12.5px;" onkeypress="if(event.key==='Enter')fsNavigateToPath(this.value)">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="fsCreateNewFolder()" title="Criar nova pasta aqui">
+            ➕ Nova Pasta
+          </button>
+        </div>
+
+        <!-- Lista de Diretórios -->
+        <div class="fs-folder-container" id="fs-folder-list">
+          <div style="color: var(--text-muted); font-size: 12px; padding: 20px; text-align: center;">Carregando pastas...</div>
+        </div>
+
+        <!-- Opção de Nome do Arquivo (Apenas para PST ou MBOX) -->
+        <div id="fs-filename-row" style="display: none; margin-bottom: 10px;">
+          <label class="form-label" style="margin-bottom: 4px;">Nome do Arquivo de Saída:</label>
+          <input type="text" id="fs-input-filename" class="form-control" placeholder="backup_emails.pst" oninput="updateFsPreview()">
+        </div>
+
+        <!-- Pré-visualização do Caminho Completo Selecionado -->
+        <div class="fs-file-preview-bar">
+          <div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Caminho Selecionado:</div>
+          <div id="fs-preview-full-path" style="font-weight: 600; color: var(--primary); word-break: break-all;"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeFsPickerModal()">Cancelar</button>
+        <button class="btn btn-primary" onclick="confirmFsSelection()">✓ Confirmar Escolha</button>
+      </div>
+    </div>
+  </div>
+
   <!-- MODAL: Confirmação / Alerta Customizado Elegante -->
   <div class="modal-overlay" id="modal-confirm" style="z-index: 1100;">
     <div class="modal-box modal-box-sm">

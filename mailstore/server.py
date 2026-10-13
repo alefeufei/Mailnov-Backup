@@ -502,6 +502,76 @@ if path:
         return {"path": "", "error": str(e)}
 
 
+@app.get("/api/fs/browse")
+def browse_filesystem(path: Optional[str] = None):
+    """Navega pelo sistema de arquivos local para escolha visual de pastas e arquivos."""
+    import string
+    home_dir = Path.home()
+    if not path or not path.strip():
+        target = home_dir / "Desktop"
+        if not target.exists():
+            target = home_dir
+    else:
+        target = Path(path).resolve()
+        if not target.exists() or not target.is_dir():
+            target = target.parent if (target.parent.exists() and target.parent.is_dir()) else home_dir
+
+    shortcuts = [
+        {"name": "Área de Trabalho", "path": str(home_dir / "Desktop"), "icon": "🖥️"},
+        {"name": "Documentos", "path": str(home_dir / "Documents"), "icon": "📁"},
+        {"name": "Downloads", "path": str(home_dir / "Downloads"), "icon": "📥"},
+        {"name": "Pasta do Projeto", "path": str(BASE_DIR), "icon": "📦"},
+    ]
+    shortcuts = [s for s in shortcuts if Path(s["path"]).exists()]
+
+    drives = []
+    if os.name == "nt":
+        for letter in string.ascii_uppercase:
+            drive_path = f"{letter}:\\"
+            if os.path.exists(drive_path):
+                drives.append(drive_path)
+
+    directories = []
+    try:
+        with os.scandir(target) as it:
+            for entry in it:
+                try:
+                    if entry.is_dir(follow_symlinks=False) and not entry.name.startswith("."):
+                        directories.append({
+                            "name": entry.name,
+                            "path": str(Path(entry.path).resolve())
+                        })
+                except (PermissionError, OSError):
+                    continue
+        directories.sort(key=lambda d: d["name"].lower())
+    except (PermissionError, OSError):
+        pass
+
+    parent_path = str(target.parent) if target.parent != target else ""
+
+    return {
+        "current_path": str(target),
+        "parent_path": parent_path,
+        "drives": drives,
+        "shortcuts": shortcuts,
+        "directories": directories
+    }
+
+
+@app.post("/api/fs/create-folder")
+def create_filesystem_folder(req: dict):
+    parent = req.get("parent_path", "").strip()
+    name = req.get("folder_name", "").strip()
+    if not parent or not name:
+        raise HTTPException(status_code=400, detail="Caminho e nome da pasta são obrigatórios.")
+    new_dir = Path(parent) / name
+    try:
+        new_dir.mkdir(parents=True, exist_ok=True)
+        return {"success": True, "created_path": str(new_dir)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Erro ao criar pasta: {e}")
+
+
 # --- Verificação de Integridade e Logs ---
 
 @app.post("/api/verify")

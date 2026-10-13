@@ -826,77 +826,189 @@ function selectExportTarget(target) {
   document.getElementById("export-fields-mbox").style.display = target === "mbox" ? "block" : "none";
 }
 
-async function browseSavePstPath() {
-  const btn = document.getElementById("btn-browse-pst");
-  const origHtml = btn ? btn.innerHTML : "";
-  if (btn) {
-    btn.innerHTML = "⏳ Aguardando...";
-    btn.disabled = true;
-  }
-  try {
-    const curVal = document.getElementById("dest-pst-path").value.trim();
-    const defaultName = curVal ? curVal.split(/[\\/]/).pop() : "backup_emails.pst";
-    const res = await fetch(`/api/dialog/save-file?file_type=pst&default_name=${encodeURIComponent(defaultName)}&title=${encodeURIComponent("Salvar Arquivo PST do Outlook")}`);
-    const data = await res.json();
-    if (data.path) {
-      document.getElementById("dest-pst-path").value = data.path;
+// --- Explorador de Pastas e Arquivos Integrado ---
+let fsPickerMode = "file"; // "file" ou "dir"
+let fsPickerTargetInputId = "";
+let fsPickerCurrentPath = "";
+let fsPickerParentPath = "";
+
+function openFsPicker(targetInputId, mode, defaultName, title) {
+  fsPickerTargetInputId = targetInputId;
+  fsPickerMode = mode;
+
+  const modalIcon = document.getElementById("fs-modal-icon");
+  const modalTitle = document.getElementById("fs-modal-title");
+  const filenameRow = document.getElementById("fs-filename-row");
+  const filenameInput = document.getElementById("fs-input-filename");
+
+  if (modalTitle) modalTitle.textContent = title;
+  if (modalIcon) modalIcon.textContent = mode === "dir" ? "📁" : "📑";
+
+  if (mode === "file") {
+    if (filenameRow) filenameRow.style.display = "block";
+    const currentVal = document.getElementById(targetInputId) ? document.getElementById(targetInputId).value.trim() : "";
+    let nameToUse = defaultName;
+    if (currentVal) {
+      const parts = currentVal.split(/[\\/]/);
+      if (parts.length > 0 && parts[parts.length - 1].includes(".")) {
+        nameToUse = parts[parts.length - 1];
+      }
     }
+    if (filenameInput) filenameInput.value = nameToUse;
+  } else {
+    if (filenameRow) filenameRow.style.display = "none";
+  }
+
+  // Caminho inicial: se o campo já tiver algo, começa por lá
+  let initialPath = "";
+  const existingVal = document.getElementById(targetInputId) ? document.getElementById(targetInputId).value.trim() : "";
+  if (existingVal) {
+    if (mode === "file") {
+      const idx = Math.max(existingVal.lastIndexOf("\\"), existingVal.lastIndexOf("/"));
+      initialPath = idx > 0 ? existingVal.substring(0, idx) : "";
+    } else {
+      initialPath = existingVal;
+    }
+  }
+
+  const modal = document.getElementById("modal-fs-picker");
+  if (modal) modal.classList.add("active");
+
+  loadFsPath(initialPath);
+}
+
+async function loadFsPath(path = "") {
+  const container = document.getElementById("fs-folder-list");
+  if (container) {
+    container.innerHTML = '<div style="color: var(--text-muted); font-size: 12px; padding: 30px; text-align: center;">Carregando diretórios...</div>';
+  }
+
+  try {
+    const res = await fetch(`/api/fs/browse?path=${encodeURIComponent(path)}`);
+    const data = await res.json();
+
+    fsPickerCurrentPath = data.current_path || "";
+    fsPickerParentPath = data.parent_path || "";
+
+    const pathInput = document.getElementById("fs-input-path");
+    if (pathInput) pathInput.value = fsPickerCurrentPath;
+
+    const btnUp = document.getElementById("fs-btn-up");
+    if (btnUp) btnUp.disabled = !fsPickerParentPath;
+
+    // Renderiza Atalhos e Unidades
+    const shortcutsDiv = document.getElementById("fs-shortcuts-container");
+    if (shortcutsDiv) {
+      let shortcutsHtml = "";
+      if (data.shortcuts && data.shortcuts.length > 0) {
+        data.shortcuts.forEach(s => {
+          shortcutsHtml += `<button type="button" class="fs-shortcut-btn" onclick="loadFsPath('${escapeHtml(s.path.replace(/\\/g, '\\\\'))}')">${s.icon} ${escapeHtml(s.name)}</button>`;
+        });
+      }
+      if (data.drives && data.drives.length > 0) {
+        data.drives.forEach(d => {
+          shortcutsHtml += `<button type="button" class="fs-shortcut-btn" onclick="loadFsPath('${escapeHtml(d.replace(/\\/g, '\\\\'))}')">💾 ${escapeHtml(d)}</button>`;
+        });
+      }
+      shortcutsDiv.innerHTML = shortcutsHtml;
+    }
+
+    // Renderiza Lista de Pastas
+    if (container) {
+      if (!data.directories || data.directories.length === 0) {
+        container.innerHTML = '<div style="color: var(--text-muted); font-size: 12px; padding: 25px; text-align: center;">Nenhuma subpasta encontrada nesta pasta.</div>';
+      } else {
+        container.innerHTML = data.directories.map(d => `
+          <div class="fs-folder-item" onclick="loadFsPath('${escapeHtml(d.path.replace(/\\/g, '\\\\'))}')" title="${escapeHtml(d.name)}">
+            <span>📁</span>
+            <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(d.name)}</span>
+          </div>
+        `).join("");
+      }
+    }
+
+    updateFsPreview();
   } catch (err) {
-    console.error("Erro ao selecionar arquivo PST:", err);
-  } finally {
-    if (btn) {
-      btn.innerHTML = origHtml;
-      btn.disabled = false;
+    if (container) {
+      container.innerHTML = `<div style="color: var(--danger); font-size: 12px; padding: 20px; text-align: center;">Erro ao ler diretório: ${escapeHtml(err.message)}</div>`;
     }
   }
 }
 
-async function browseSelectEmlDir() {
-  const btn = document.getElementById("btn-browse-eml");
-  const origHtml = btn ? btn.innerHTML : "";
-  if (btn) {
-    btn.innerHTML = "⏳ Aguardando...";
-    btn.disabled = true;
-  }
-  try {
-    const res = await fetch(`/api/dialog/select-folder?title=${encodeURIComponent("Selecionar Diretório de Destino para EMLs")}`);
-    const data = await res.json();
-    if (data.path) {
-      document.getElementById("dest-eml-dir").value = data.path;
-    }
-  } catch (err) {
-    console.error("Erro ao selecionar diretório EML:", err);
-  } finally {
-    if (btn) {
-      btn.innerHTML = origHtml;
-      btn.disabled = false;
-    }
+function updateFsPreview() {
+  const previewElem = document.getElementById("fs-preview-full-path");
+  if (!previewElem) return;
+
+  if (fsPickerMode === "file") {
+    const filenameInput = document.getElementById("fs-input-filename");
+    const filename = filenameInput ? filenameInput.value.trim() : "backup_emails.pst";
+    const cleanCurrent = fsPickerCurrentPath.replace(/[\/\\]+$/, "");
+    const full = cleanCurrent ? `${cleanCurrent}\\${filename}` : filename;
+    previewElem.textContent = full;
+  } else {
+    previewElem.textContent = fsPickerCurrentPath;
   }
 }
 
-async function browseSaveMboxPath() {
-  const btn = document.getElementById("btn-browse-mbox");
-  const origHtml = btn ? btn.innerHTML : "";
-  if (btn) {
-    btn.innerHTML = "⏳ Aguardando...";
-    btn.disabled = true;
+function fsNavigateUp() {
+  if (fsPickerParentPath) {
+    loadFsPath(fsPickerParentPath);
   }
+}
+
+function fsNavigateToPath(customPath) {
+  if (customPath && customPath.trim()) {
+    loadFsPath(customPath.trim());
+  }
+}
+
+async function fsCreateNewFolder() {
+  const folderName = prompt("Digite o nome da nova pasta:");
+  if (!folderName || !folderName.trim()) return;
+
   try {
-    const curVal = document.getElementById("dest-mbox-path").value.trim();
-    const defaultName = curVal ? curVal.split(/[\\/]/).pop() : "emails.mbox";
-    const res = await fetch(`/api/dialog/save-file?file_type=mbox&default_name=${encodeURIComponent(defaultName)}&title=${encodeURIComponent("Salvar Arquivo MBOX")}`);
+    const res = await fetch("/api/fs/create-folder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        parent_path: fsPickerCurrentPath,
+        folder_name: folderName.trim()
+      })
+    });
     const data = await res.json();
-    if (data.path) {
-      document.getElementById("dest-mbox-path").value = data.path;
-    }
+    if (!res.ok) throw new Error(data.detail || "Falha ao criar pasta");
+    loadFsPath(data.created_path);
   } catch (err) {
-    console.error("Erro ao selecionar arquivo MBOX:", err);
-  } finally {
-    if (btn) {
-      btn.innerHTML = origHtml;
-      btn.disabled = false;
+    alert("Não foi possível criar a pasta: " + err.message);
+  }
+}
+
+function confirmFsSelection() {
+  const previewElem = document.getElementById("fs-preview-full-path");
+  if (previewElem && previewElem.textContent && fsPickerTargetInputId) {
+    const targetInput = document.getElementById(fsPickerTargetInputId);
+    if (targetInput) {
+      targetInput.value = previewElem.textContent;
     }
   }
+  closeFsPickerModal();
+}
+
+function closeFsPickerModal() {
+  const modal = document.getElementById("modal-fs-picker");
+  if (modal) modal.classList.remove("active");
+}
+
+function browseSavePstPath() {
+  openFsPicker("dest-pst-path", "file", "backup_emails.pst", "Salvar Arquivo PST do Outlook");
+}
+
+function browseSelectEmlDir() {
+  openFsPicker("dest-eml-dir", "dir", "", "Selecionar Pasta de Destino para EMLs");
+}
+
+function browseSaveMboxPath() {
+  openFsPicker("dest-mbox-path", "file", "emails.mbox", "Salvar Arquivo MBOX");
 }
 
 async function loadExportAccounts() {
