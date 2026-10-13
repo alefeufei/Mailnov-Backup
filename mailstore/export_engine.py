@@ -391,10 +391,22 @@ class ExportEngine:
                     # Trata erro de namespace do Dovecot ("Client tried to access nonexistent namespace. (Mailbox name should probably be prefixed with: INBOX.)")
                     resp_str = str(resp).upper()
                     if typ != "OK" and ("NONEXISTENT NAMESPACE" in resp_str or "PREFIXED WITH: INBOX" in resp_str or "NAMESPACE" in resp_str):
-                        ns_prefix = f"INBOX{target_delim}"
+                        m_sugg = re.search(r'prefixed with:\s*([A-Za-z0-9_.\/]+)', str(resp), re.IGNORECASE)
+                        if m_sugg:
+                            sugg = m_sugg.group(1).rstrip('). ')
+                            if not sugg.endswith('.') and not sugg.endswith('/'):
+                                sugg = f"{sugg}{target_delim}"
+                            ns_prefix = sugg
+                            if sugg.endswith('.'):
+                                target_delim = '.'
+                            elif sugg.endswith('/'):
+                                target_delim = '/'
+                        else:
+                            ns_prefix = f"INBOX{target_delim}"
+
                         if not folder_dest.upper().startswith(ns_prefix.upper()):
                             folder_dest = f"{ns_prefix}{folder_dest}"
-                        progress.add_log(f"Prefixo '{ns_prefix}' exigido pelo servidor. Reenviando mensagem #{msg['id']} para '{folder_dest}'...")
+                        progress.add_log(f"Prefixo de namespace '{ns_prefix}' detectado do servidor. Reenviando mensagem #{msg['id']} para '{folder_dest}'...")
                         ensure_imap_hierarchy(client, folder_dest, target_delim, created_folders_cache, progress)
                         enc_f = encode_imap_utf7(folder_dest)
                         folder_arg = f'"{enc_f}"' if " " in enc_f or not enc_f.isalnum() else enc_f
