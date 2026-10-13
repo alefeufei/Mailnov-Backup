@@ -39,9 +39,11 @@ pub struct FakeFolder {
 #[derive(Debug, Default)]
 pub struct FakeSource {
     pub folders: BTreeMap<String, FakeFolder>,
-    /// Any `fetch` containing one of these UIDs fails.
+    /// Any `fetch` containing one of these UIDs fails with `Error::Imap` (a bad message).
     pub fail_uids: HashSet<u32>,
-    /// After this many successful `fetch` calls, every `fetch` fails.
+    /// Any `fetch` containing one of these UIDs fails with `Error::Connection` (checked first).
+    pub fail_uids_connection: HashSet<u32>,
+    /// After this many successful `fetch` calls, every `fetch` fails with `Error::Connection`.
     pub fail_after_fetches: Option<usize>,
     /// Number of `fetch` calls made (successful or not).
     pub fetch_calls: usize,
@@ -123,6 +125,7 @@ impl FakeSource {
 
     pub fn clear_failures(&mut self) {
         self.fail_uids.clear();
+        self.fail_uids_connection.clear();
         self.fail_after_fetches = None;
         self.drop_from_fetch.clear();
         self.expunge_on_fetch.clear();
@@ -218,8 +221,13 @@ impl MailSource for FakeSource {
         self.fetched_uids.extend_from_slice(uids);
         if let Some(n) = self.fail_after_fetches {
             if self.successful_fetches >= n {
-                return Err(Error::Imap("injected: connection lost".into()));
+                return Err(Error::Connection("injected: connection lost".into()));
             }
+        }
+        if let Some(u) = uids.iter().find(|u| self.fail_uids_connection.contains(u)) {
+            return Err(Error::Connection(format!(
+                "injected: connection lost fetching uid {u}"
+            )));
         }
         if let Some(u) = uids.iter().find(|u| self.fail_uids.contains(u)) {
             return Err(Error::Imap(format!("injected: bad message uid {u}")));

@@ -179,6 +179,9 @@ impl MailSource for ImapSource {
 
     fn select(&mut self, folder: &str) -> Result<FolderState> {
         let wire = self.wire_name(folder);
+        // Forget the previous folder first: a reconnect during this EXAMINE must not re-open
+        // it (it may be gone), and after a refused EXAMINE no folder is open anyway.
+        self.conn.set_selected(None);
         let mb = self.conn.run(|s| s.examine(&wire))?;
         // UIDNEXT is optional (the engine never uses it); UIDVALIDITY is what makes UIDs usable.
         match mb.uid_validity {
@@ -653,6 +656,38 @@ mod source_tests {
         let st = s.select("INBOX").unwrap();
         assert_eq!(st.uidvalidity, 42);
         assert_eq!(st.uidnext, 0);
+    }
+
+    #[test]
+    fn a_reconnect_while_opening_a_folder_never_reopens_the_previous_one() {
+        // Conn 1: A opens, "Gone" is refused, the connection drops while opening B.
+        // Conn 2: A no longer exists; B opens. The stale A must not be re-examined.
+        let server = Server::new(|conn, cmd| {
+            base(cmd).unwrap_or_else(|| {
+                let ok = |uv: u32| {
+                    Reply::Text(format!(
+                        "* OK [UIDVALIDITY {uv}] v\r\n{{tag}} OK [READ-ONLY] ok\r\n"
+                    ))
+                };
+                let no = || Reply::Text("{tag} NO no such mailbox\r\n".into());
+                match (conn, cmd) {
+                    (1, "EXAMINE \"A\"") => ok(1),
+                    (1, "EXAMINE \"B\"") => Reply::Drop(String::new()),
+                    (_, "EXAMINE \"B\"") => ok(2),
+                    _ => no(),
+                }
+            })
+        });
+        let mut s = source(&server);
+        s.select("A").unwrap();
+        assert!(matches!(s.select("Gone"), Err(Error::Imap(_))));
+        let st = s.select("B").unwrap();
+        assert_eq!(st.uidvalidity, 2);
+        let cmds = server.commands();
+        assert!(
+            !cmds.iter().any(|(c, x)| *c > 1 && x == "EXAMINE \"A\""),
+            "{cmds:?}"
+        );
     }
 
     #[test]

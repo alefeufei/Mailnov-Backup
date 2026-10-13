@@ -17,26 +17,48 @@ fn emit(events: &Sender<Event>, e: Event) {
     let _ = events.send(e);
 }
 
+/// Why one message could not be archived. The original error is kept so the decision to go on
+/// or to stop is made on its class, never on how many messages failed.
+enum MessageFailure {
+    /// The source rejected the fetch of this message (a non-systemic error, e.g. `NO`/`BAD`).
+    Fetch(Error),
+    /// The fetch succeeded but this UID, still listed, was not in the response.
+    MissingFromResponse,
+}
+
+impl MessageFailure {
+    fn reason(&self) -> String {
+        match self {
+            MessageFailure::Fetch(e) => e.to_string(),
+            MessageFailure::MissingFromResponse => "missing from fetch response".to_string(),
+        }
+    }
+}
+
+/// Messages obtained, and the UIDs that failed with their reason.
+type Fetched = (Vec<RawMessage>, Vec<(u32, MessageFailure)>);
+
 /// Fetch `uids`; on a batch error retry one UID at a time to isolate bad messages.
-/// Returns the messages obtained and the `(uid, reason)` of those that failed.
-fn fetch_isolating(
-    source: &mut dyn MailSource,
-    uids: &[u32],
-) -> (Vec<RawMessage>, Vec<(u32, String)>) {
+/// Returns the messages obtained and the UIDs that failed with their error. A systemic error
+/// (connection, login, disk) at any point is returned as `Err` at once: the run must stop, and
+/// retrying every remaining UID against a dead connection would only produce a failure storm.
+fn fetch_isolating(source: &mut dyn MailSource, uids: &[u32]) -> Result<Fetched> {
     match source.fetch(uids) {
-        Ok(msgs) => (msgs, vec![]),
+        Ok(msgs) => Ok((msgs, vec![])),
+        Err(e) if is_systemic(&e) => Err(e),
         // A single UID was already tried on its own.
-        Err(e) if uids.len() == 1 => (vec![], vec![(uids[0], e.to_string())]),
+        Err(e) if uids.len() == 1 => Ok((vec![], vec![(uids[0], MessageFailure::Fetch(e))])),
         Err(_) => {
             let mut ok = vec![];
             let mut failed = vec![];
             for &uid in uids {
                 match source.fetch(&[uid]) {
                     Ok(mut m) => ok.append(&mut m),
-                    Err(e) => failed.push((uid, e.to_string())),
+                    Err(e) if is_systemic(&e) => return Err(e),
+                    Err(e) => failed.push((uid, MessageFailure::Fetch(e))),
                 }
             }
-            (ok, failed)
+            Ok((ok, failed))
         }
     }
 }
@@ -44,8 +66,8 @@ fn fetch_isolating(
 /// An error that ended the processing of one folder.
 struct FolderError {
     error: Error,
-    /// Stop the whole run (connection/login/disk/index trouble, or a batch where every message
-    /// failed, R9/R17) instead of going on with the next folder.
+    /// Stop the whole run (connection/login/disk/index trouble) instead of going on with the
+    /// next folder.
     abort: bool,
 }
 
@@ -77,8 +99,9 @@ fn normalize_folder(name: &str) -> String {
 ///
 /// A folder that cannot be processed (not found on the server, `EXAMINE`/search refused, any
 /// other per-folder server error) emits `FolderFailed`, counts as one failure and the run goes
-/// on with the next folder. Connection, login, disk and index errors end the run with `Err`, as
-/// does a batch in which every message failed to download.
+/// on with the next folder. A message the source refuses to deliver is a `MessageFailed` (and
+/// pins `last_uid` below it), however many of them there are. Connection, login, disk and index
+/// errors (including one hit while fetching a single message) end the run at once with `Err`.
 pub fn archive(
     source: &mut dyn MailSource,
     store: &mut dyn Store,
@@ -228,10 +251,11 @@ fn archive_folder(
                 .collect()
         };
 
+        // A systemic error (dead connection...) aborts the whole run right here.
         let (messages, mut failed) = if wanted.is_empty() {
             (vec![], vec![])
         } else {
-            fetch_isolating(source, &wanted)
+            fetch_isolating(source, &wanted)?
         };
 
         // A UID absent from the response is expunged only if the source confirms it is gone.
@@ -249,13 +273,13 @@ fn archive_folder(
                 .collect();
             for uid in missing {
                 if still.contains(&uid) {
-                    failed.push((uid, "missing from fetch response".to_string()));
+                    failed.push((uid, MessageFailure::MissingFromResponse));
                 }
             }
             failed.sort_by_key(|(u, _)| *u);
         }
 
-        for (uid, reason) in &failed {
+        for (uid, why) in &failed {
             summary.failed += 1;
             folder_failed = true;
             lowest_failed = Some(lowest_failed.map_or(*uid, |l| l.min(*uid)));
@@ -264,21 +288,10 @@ fn archive_folder(
                 Event::MessageFailed {
                     folder: folder.to_string(),
                     uid: *uid,
-                    reason: reason.clone(),
+                    reason: why.reason(),
                 },
             );
         }
-        if wanted.len() > 1 && failed.len() == wanted.len() {
-            // Connection-level trouble (R9/R17): stop the whole run, not just this folder. A
-            // single failing UID proves nothing (it is often a poison message retried alone).
-            return Err(FolderError {
-                error: Error::Imap(format!(
-                    "every message of the batch in {folder} failed to download"
-                )),
-                abort: true,
-            });
-        }
-
         let mut ceiling = chunk_max;
         if let Some(l) = lowest_failed {
             ceiling = ceiling.min(l.saturating_sub(1));

@@ -131,7 +131,7 @@ fn resume_after_failure_between_batches() {
     let mut src = inbox(120);
     src.fail_after_fetches = Some(1);
     let (r, _) = run(&mut src, &mut store, &opts(50));
-    assert!(matches!(r, Err(Error::Imap(_))));
+    assert!(matches!(r, Err(Error::Connection(_))), "{r:?}");
     assert_eq!(last_uid(&store, "INBOX"), 50);
     src.clear_failures();
     run(&mut src, &mut store, &opts(50)).0.unwrap();
@@ -485,7 +485,7 @@ fn interrupted_reconcile_keeps_old_uidvalidity_and_reconciles_again() {
     src.fetched_uids.clear();
     src.fail_after_fetches = Some(src.fetch_calls + 1);
     let (r, _) = run(&mut src, &mut store, &opts(5));
-    assert!(matches!(r, Err(Error::Imap(_))));
+    assert!(matches!(r, Err(Error::Connection(_))), "{r:?}");
     assert_eq!(
         store
             .folder_state(ACC, "INBOX")
@@ -566,13 +566,15 @@ fn reconcile_always_downloads_messages_without_message_id() {
 }
 
 #[test]
-fn all_fail_batch_errors_but_keeps_earlier_batches() {
+fn batch_where_every_message_is_rejected_fails_only_those_messages() {
+    // Class-based rule: per-message server errors never abort, however many there are.
     let dir = tempfile::tempdir().unwrap();
     let mut store = FsSqliteStore::open(dir.path()).unwrap();
     let mut src = inbox(10);
     src.fail_uids.extend([5, 6, 7, 8]);
     let (r, events) = run(&mut src, &mut store, &opts(4));
-    assert!(matches!(r, Err(Error::Imap(_))));
+    let s = r.unwrap();
+    assert_eq!((s.added, s.failed), (6, 4));
     let failed: Vec<u32> = events
         .iter()
         .filter_map(|e| {
@@ -584,6 +586,23 @@ fn all_fail_batch_errors_but_keeps_earlier_batches() {
         })
         .collect();
     assert_eq!(failed, vec![5, 6, 7, 8]);
+    assert_eq!(store.messages(ACC).unwrap().len(), 6);
+    assert_eq!(last_uid(&store, "INBOX"), 4);
+}
+
+#[test]
+fn batch_where_every_message_hits_a_connection_error_aborts_and_keeps_earlier_batches() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = inbox(10);
+    src.fail_uids_connection.extend([5, 6, 7, 8]);
+    let (r, events) = run(&mut src, &mut store, &opts(4));
+    assert!(matches!(r, Err(Error::Connection(_))), "{r:?}");
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, Event::MessageFailed { .. })));
+    // batch 1 committed, batch 2 tried once, nothing after it
+    assert_eq!(src.fetch_calls, 2);
     assert_eq!(store.messages(ACC).unwrap().len(), 4);
     assert_eq!(last_uid(&store, "INBOX"), 4);
 }
@@ -889,4 +908,100 @@ fn reindex_then_archive_creates_no_phantom_folders() {
         .collect();
     let want: std::collections::BTreeSet<String> = names.iter().map(|s| s.to_string()).collect();
     assert_eq!(folders, want);
+}
+
+// ---- follow-up: abort on error class, not on failure count ----
+
+#[test]
+fn two_poison_uids_never_block_later_folders() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = FakeSource::new();
+    for f in ["A", "B", "INBOX"] {
+        src.add_folder(f, 7);
+    }
+    for i in 1..=10 {
+        src.add_message("A", i, eml(i), &[]);
+    }
+    for i in 1..=2 {
+        src.add_message("B", i, eml(100 + i), &[]);
+        src.add_message("INBOX", i, eml(200 + i), &[]);
+    }
+    src.fail_uids.extend([5, 7]);
+    let s = run(&mut src, &mut store, &opts(50)).0.unwrap();
+    assert_eq!((s.added, s.failed), (12, 2));
+    assert_eq!(last_uid(&store, "A"), 4);
+    src.add_message("B", 3, eml(103), &[]);
+    src.fetched_uids.clear();
+    let (r, events) = run(&mut src, &mut store, &opts(50));
+    let s = r.unwrap();
+    assert_eq!((s.added, s.failed), (1, 2)); // failed > 0: CLI exit code 2
+    assert_eq!(src.fetched_uids, vec![5, 7, 5, 7, 3]);
+    assert!(folder_failures(&events).is_empty());
+    assert_eq!(last_uid(&store, "A"), 4);
+    assert_eq!(last_uid(&store, "B"), 3);
+    assert_eq!(last_uid(&store, "INBOX"), 2);
+}
+
+#[test]
+fn three_poison_uids_over_two_runs_then_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = inbox(12);
+    src.add_folder("Z", 1);
+    src.add_message("Z", 1, eml(500), &[]);
+    src.fail_uids.extend([3, 6, 9]);
+    for round in 0..2 {
+        let s = run(&mut src, &mut store, &opts(5)).0.unwrap();
+        assert_eq!(s.failed, 3, "round {round}");
+        assert_eq!(last_uid(&store, "INBOX"), 2);
+        assert_eq!(last_uid(&store, "Z"), 1);
+    }
+    assert_eq!(store.messages(ACC).unwrap().len(), 10);
+    src.clear_failures();
+    src.fetched_uids.clear();
+    let s = run(&mut src, &mut store, &opts(5)).0.unwrap();
+    assert_eq!((s.added, s.failed), (3, 0));
+    assert_eq!(src.fetched_uids, vec![3, 6, 9]);
+    assert_eq!(last_uid(&store, "INBOX"), 12);
+}
+
+#[test]
+fn connection_error_on_a_single_uid_fetch_aborts_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = three_folders();
+    src.add_message("A", 3, eml(3), &[]);
+    run(&mut src, &mut store, &opts(50)).0.unwrap();
+    src.add_message("A", 4, eml(4), &[]);
+    src.add_message("B", 3, eml(13), &[]);
+    src.fail_uids_connection.insert(4);
+    let before = src.fetch_calls;
+    let (r, events) = run(&mut src, &mut store, &opts(50));
+    assert!(matches!(r, Err(Error::Connection(_))), "{r:?}");
+    assert_eq!(src.fetch_calls - before, 1);
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, Event::MessageFailed { .. } | Event::FolderFailed { .. })));
+    assert_eq!(last_uid(&store, "B"), 2);
+}
+
+#[test]
+fn connection_lost_while_isolating_a_batch_aborts_without_a_failure_storm() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = inbox(10);
+    src.fail_uids.insert(2);
+    // batch fetch fails (bad uid 2); isolating: 1 ok, 2 rejected, 3 ok, then the link dies at 4
+    src.fail_after_fetches = Some(2);
+    let (r, events) = run(&mut src, &mut store, &opts(50));
+    assert!(matches!(r, Err(Error::Connection(_))), "{r:?}");
+    assert_eq!(src.fetch_calls, 5);
+    assert_eq!(
+        src.fetched_uids,
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 1, 2, 3, 4]
+    );
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, Event::MessageFailed { uid, .. } if *uid > 2)));
 }
