@@ -1,0 +1,11 @@
+[package]
+name = "mailbackup"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mailbackup"
+path = "src/main.rs"
+
+[dependencies]
+mailbackup-core = { path = "../core" }
