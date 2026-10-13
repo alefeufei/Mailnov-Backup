@@ -708,15 +708,22 @@ body {
 }
 
 .profile-toggle-btn {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
-  width: 16px;
-  text-align: center;
-  transition: transform 0.15s ease;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.profile-toggle-btn.collapsed {
-  transform: rotate(-90deg);
+.profile-toggle-btn:hover {
+  background-color: #cbd5e1;
+  color: var(--text-main);
 }
 
 .profile-info {

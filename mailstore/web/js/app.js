@@ -583,7 +583,7 @@ async function loadFoldersTree() {
       html += `
         <div class="profile-tree-group" id="acc-group-${account.account_id}">
           <div class="profile-tree-header" onclick="selectBrowseProfile('${escapeHtml(account.account_id)}', '${escapeHtml(account.account_name)}', '${escapeHtml(account.username)}')">
-            <span class="profile-toggle-btn" id="toggle-btn-${account.account_id}" onclick="event.stopPropagation(); toggleProfileFolders('${escapeHtml(account.account_id)}')">▼</span>
+            <span class="profile-toggle-btn collapsed" id="toggle-btn-${account.account_id}" onclick="event.stopPropagation(); toggleProfileFolders('${escapeHtml(account.account_id)}')">▶</span>
             <span style="font-size: 15px;">📬</span>
             <div class="profile-info">
               <div class="profile-name" title="${escapeHtml(account.account_name)}">${escapeHtml(account.account_name)}</div>
@@ -592,7 +592,7 @@ async function loadFoldersTree() {
             <span class="badge-count" title="Total na conta: ${totalMsgs}">${totalMsgs}</span>
           </div>
 
-          <div class="profile-folders-container" id="folders-container-${account.account_id}">
+          <div class="profile-folders-container collapsed" id="folders-container-${account.account_id}">
             ${
               hasFolders
                 ? account.folders
@@ -630,8 +630,13 @@ function updateSearchAccountFilter(tree) {
 function toggleProfileFolders(accountId) {
   const container = document.getElementById(`folders-container-${accountId}`);
   const btn = document.getElementById(`toggle-btn-${accountId}`);
-  if (container) container.classList.toggle("collapsed");
-  if (btn) btn.classList.toggle("collapsed");
+  if (container) {
+    const isCollapsed = container.classList.toggle("collapsed");
+    if (btn) {
+      btn.textContent = isCollapsed ? "▶" : "▼";
+      btn.classList.toggle("collapsed", isCollapsed);
+    }
+  }
 }
 
 function clearTreeActiveSelection() {
