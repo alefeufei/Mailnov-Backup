@@ -404,8 +404,13 @@
               <div class="section-title">Configurações de Exportação PST do Outlook</div>
               <div class="form-group">
                 <label class="form-label">Caminho do Arquivo PST de Saída:</label>
-                <input type="text" id="dest-pst-path" class="form-control" placeholder="C:\Users\...\Desktop\meu_backup.pst">
-                <small style="color: var(--text-muted); font-size: 11px;">O arquivo será criado com formato Unicode compatível com todas as versões do Microsoft Outlook.</small>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <input type="text" id="dest-pst-path" class="form-control" style="flex: 1;" placeholder="C:\Users\...\Desktop\meu_backup.pst">
+                  <button type="button" class="btn btn-secondary" id="btn-browse-pst" onclick="browseSavePstPath()" style="white-space: nowrap; height: 38px; display: inline-flex; align-items: center; gap: 6px;">
+                    📁 Localizar / Escolher Pasta...
+                  </button>
+                </div>
+                <small style="color: var(--text-muted); font-size: 11px; margin-top: 4px; display: block;">O arquivo será criado com formato Unicode (.pst) nativo e compatível com todas as versões do Microsoft Outlook.</small>
               </div>
             </div>
 
@@ -414,7 +419,13 @@
               <div class="section-title">Diretório de Exportação EML</div>
               <div class="form-group">
                 <label class="form-label">Diretório no Disco:</label>
-                <input type="text" id="dest-eml-dir" class="form-control" placeholder="C:\Users\...\Documents\Exportacao_EML">
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <input type="text" id="dest-eml-dir" class="form-control" style="flex: 1;" placeholder="C:\Users\...\Documents\Exportacao_EML">
+                  <button type="button" class="btn btn-secondary" id="btn-browse-eml" onclick="browseSelectEmlDir()" style="white-space: nowrap; height: 38px; display: inline-flex; align-items: center; gap: 6px;">
+                    📁 Escolher Pasta...
+                  </button>
+                </div>
+                <small style="color: var(--text-muted); font-size: 11px; margin-top: 4px; display: block;">Todos os e-mails serão salvos individualmente em pastas no formato padrão RFC 822.</small>
               </div>
             </div>
 
@@ -423,7 +434,13 @@
               <div class="section-title">Arquivo de Saída MBOX</div>
               <div class="form-group">
                 <label class="form-label">Caminho do Arquivo .mbox:</label>
-                <input type="text" id="dest-mbox-path" class="form-control" placeholder="C:\Users\...\Documents\emails.mbox">
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <input type="text" id="dest-mbox-path" class="form-control" style="flex: 1;" placeholder="C:\Users\...\Documents\emails.mbox">
+                  <button type="button" class="btn btn-secondary" id="btn-browse-mbox" onclick="browseSaveMboxPath()" style="white-space: nowrap; height: 38px; display: inline-flex; align-items: center; gap: 6px;">
+                    📁 Localizar / Escolher Pasta...
+                  </button>
+                </div>
+                <small style="color: var(--text-muted); font-size: 11px; margin-top: 4px; display: block;">Formato compatível com Mozilla Thunderbird e Apple Mail.</small>
               </div>
             </div>
 

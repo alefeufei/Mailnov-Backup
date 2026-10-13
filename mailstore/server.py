@@ -2,6 +2,8 @@
 
 import asyncio
 import os
+import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Dict, Optional
@@ -442,6 +444,62 @@ def cancel_export_job():
         if not cancelled:
             raise HTTPException(status_code=400, detail="Nenhuma exportação em andamento.")
         return {"success": True, "message": "Cancelamento solicitado."}
+
+
+@app.get("/api/dialog/save-file")
+def dialog_save_file(
+    default_name: str = "backup_emails.pst",
+    file_type: str = "pst",
+    title: str = "Salvar Arquivo PST do Outlook"
+):
+    """Abre o diálogo nativo do Windows para o usuário escolher o local e nome de arquivo."""
+    try:
+        clean_ext = file_type.lstrip(".").strip()
+        script = f"""
+import tkinter as tk
+from tkinter import filedialog
+root = tk.Tk()
+root.withdraw()
+root.attributes("-topmost", True)
+path = filedialog.asksaveasfilename(
+    title="{title}",
+    initialfile="{default_name}",
+    defaultextension=".{clean_ext}",
+    filetypes=[("Arquivo {clean_ext.upper()}", "*.{clean_ext}"), ("Todos os arquivos", "*.*")]
+)
+root.destroy()
+if path:
+    import os
+    print(os.path.normpath(path))
+"""
+        res = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120)
+        selected_path = res.stdout.strip()
+        return {"path": selected_path}
+    except Exception as e:
+        return {"path": "", "error": str(e)}
+
+
+@app.get("/api/dialog/select-folder")
+def dialog_select_folder(title: str = "Selecionar Pasta"):
+    """Abre o diálogo nativo do Windows para o usuário escolher uma pasta no disco."""
+    try:
+        script = f"""
+import tkinter as tk
+from tkinter import filedialog
+root = tk.Tk()
+root.withdraw()
+root.attributes("-topmost", True)
+path = filedialog.askdirectory(title="{title}")
+root.destroy()
+if path:
+    import os
+    print(os.path.normpath(path))
+"""
+        res = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=120)
+        selected_path = res.stdout.strip()
+        return {"path": selected_path}
+    except Exception as e:
+        return {"path": "", "error": str(e)}
 
 
 # --- Verificação de Integridade e Logs ---

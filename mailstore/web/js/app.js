@@ -826,6 +826,79 @@ function selectExportTarget(target) {
   document.getElementById("export-fields-mbox").style.display = target === "mbox" ? "block" : "none";
 }
 
+async function browseSavePstPath() {
+  const btn = document.getElementById("btn-browse-pst");
+  const origHtml = btn ? btn.innerHTML : "";
+  if (btn) {
+    btn.innerHTML = "⏳ Aguardando...";
+    btn.disabled = true;
+  }
+  try {
+    const curVal = document.getElementById("dest-pst-path").value.trim();
+    const defaultName = curVal ? curVal.split(/[\\/]/).pop() : "backup_emails.pst";
+    const res = await fetch(`/api/dialog/save-file?file_type=pst&default_name=${encodeURIComponent(defaultName)}&title=${encodeURIComponent("Salvar Arquivo PST do Outlook")}`);
+    const data = await res.json();
+    if (data.path) {
+      document.getElementById("dest-pst-path").value = data.path;
+    }
+  } catch (err) {
+    console.error("Erro ao selecionar arquivo PST:", err);
+  } finally {
+    if (btn) {
+      btn.innerHTML = origHtml;
+      btn.disabled = false;
+    }
+  }
+}
+
+async function browseSelectEmlDir() {
+  const btn = document.getElementById("btn-browse-eml");
+  const origHtml = btn ? btn.innerHTML : "";
+  if (btn) {
+    btn.innerHTML = "⏳ Aguardando...";
+    btn.disabled = true;
+  }
+  try {
+    const res = await fetch(`/api/dialog/select-folder?title=${encodeURIComponent("Selecionar Diretório de Destino para EMLs")}`);
+    const data = await res.json();
+    if (data.path) {
+      document.getElementById("dest-eml-dir").value = data.path;
+    }
+  } catch (err) {
+    console.error("Erro ao selecionar diretório EML:", err);
+  } finally {
+    if (btn) {
+      btn.innerHTML = origHtml;
+      btn.disabled = false;
+    }
+  }
+}
+
+async function browseSaveMboxPath() {
+  const btn = document.getElementById("btn-browse-mbox");
+  const origHtml = btn ? btn.innerHTML : "";
+  if (btn) {
+    btn.innerHTML = "⏳ Aguardando...";
+    btn.disabled = true;
+  }
+  try {
+    const curVal = document.getElementById("dest-mbox-path").value.trim();
+    const defaultName = curVal ? curVal.split(/[\\/]/).pop() : "emails.mbox";
+    const res = await fetch(`/api/dialog/save-file?file_type=mbox&default_name=${encodeURIComponent(defaultName)}&title=${encodeURIComponent("Salvar Arquivo MBOX")}`);
+    const data = await res.json();
+    if (data.path) {
+      document.getElementById("dest-mbox-path").value = data.path;
+    }
+  } catch (err) {
+    console.error("Erro ao selecionar arquivo MBOX:", err);
+  } finally {
+    if (btn) {
+      btn.innerHTML = origHtml;
+      btn.disabled = false;
+    }
+  }
+}
+
 async function loadExportAccounts() {
   try {
     const res = await fetch("/api/profiles");
