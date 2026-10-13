@@ -228,6 +228,63 @@ class BackupRunner:
     def __init__(self, db: Database):
         self.db = db
 
+    def _is_connection_loss(self, err: Exception) -> bool:
+        err_msg = str(err).lower()
+        return any(
+            p in err_msg for p in [
+                "eof occurred in violation of protocol",
+                "broken pipe",
+                "connection reset",
+                "connection aborted",
+                "connection closed",
+                "socket error",
+                "bad file descriptor",
+                "timed out",
+                "timeout",
+                "abort: socket error"
+            ]
+        )
+
+    def _select_folder_with_retry(
+        self,
+        client: ImapClient,
+        folder_raw: str,
+        folder_name: str,
+        progress: BackupProgress,
+        max_retries: int = 3
+    ) -> bool:
+        for attempt in range(1, max_retries + 1):
+            try:
+                typ, _ = client.conn.select(f'"{folder_raw}"', readonly=True)
+                if typ == "OK":
+                    return True
+            except Exception as e:
+                if self._is_connection_loss(e):
+                    progress.add_log(f"Queda de conexão ao selecionar '{folder_name}'. Reconectando ({attempt}/{max_retries})...")
+                    client.disconnect()
+                    time.sleep(2 * attempt)
+                    try:
+                        client.connect()
+                        continue
+                    except Exception:
+                        pass
+            try:
+                typ, _ = client.conn.select(folder_raw, readonly=True)
+                if typ == "OK":
+                    return True
+            except Exception as e:
+                if self._is_connection_loss(e):
+                    progress.add_log(f"Queda de conexão ao selecionar '{folder_name}'. Reconectando ({attempt}/{max_retries})...")
+                    client.disconnect()
+                    time.sleep(2 * attempt)
+                    try:
+                        client.connect()
+                        continue
+                    except Exception:
+                        pass
+            time.sleep(1)
+        return False
+
     def run_backup(
         self,
         profile: BackupProfile,
@@ -280,26 +337,16 @@ class BackupRunner:
 
                 db.upsert_folder(profile.id, folder_name, delim)
 
-                # Seleciona a pasta em modo leitura segura (READONLY)
-                try:
-                    # Tenta com o nome raw citado
-                    typ, count_data = client.conn.select(f'"{folder_raw}"', readonly=True)
-                except Exception:
-                    try:
-                        typ, count_data = client.conn.select(folder_raw, readonly=True)
-                    except Exception as select_err:
-                        progress.add_log(f"Aviso: Não foi possível selecionar pasta '{folder_name}': {select_err}")
-                        total_errors_this_run += 1
-                        continue
-
-                if typ != "OK":
-                    progress.add_log(f"Aviso: Pasta '{folder_name}' ignorada (tipo {typ}).")
+                # Seleciona a pasta com retry e reconexão automática
+                selected_ok = self._select_folder_with_retry(client, folder_raw, folder_name, progress)
+                if not selected_ok:
+                    progress.add_log(f"Aviso: Não foi possível selecionar pasta '{folder_name}'. Pulando para a próxima...")
+                    total_errors_this_run += 1
                     continue
 
                 # Busca UIDs no servidor
                 search_criteria = ["ALL"]
                 if profile.since_date:
-                    # Converte YYYY-MM-DD para formato IMAP DD-Mon-YYYY
                     try:
                         d = datetime.strptime(profile.since_date, "%Y-%m-%d")
                         imap_date = d.strftime("%d-%b-%Y")
@@ -307,7 +354,19 @@ class BackupRunner:
                     except Exception:
                         pass
 
-                typ, search_data = client.conn.uid("SEARCH", *search_criteria)
+                try:
+                    typ, search_data = client.conn.uid("SEARCH", *search_criteria)
+                except Exception as search_err:
+                    if self._is_connection_loss(search_err):
+                        progress.add_log(f"Reconectando para pesquisar mensagens em '{folder_name}'...")
+                        client.disconnect()
+                        time.sleep(2)
+                        client.connect()
+                        self._select_folder_with_retry(client, folder_raw, folder_name, progress)
+                        typ, search_data = client.conn.uid("SEARCH", *search_criteria)
+                    else:
+                        raise search_err
+
                 if typ != "OK" or not search_data or not search_data[0]:
                     progress.add_log(f"Pasta '{folder_name}' está vazia.")
                     db.update_folder_stats(profile.id, folder_name, 0)
@@ -332,7 +391,7 @@ class BackupRunner:
 
                 max_uid_seen = max(server_uids) if server_uids else 0
 
-                # Download das mensagens novas
+                # Download das mensagens novas com reconexão automática resiliente
                 for i, uid in enumerate(new_uids, 1):
                     if progress.is_cancelled:
                         break
@@ -342,24 +401,50 @@ class BackupRunner:
                     elapsed = max(0.1, time.time() - progress.start_time)
                     progress.speed_mps = progress.synced_count / elapsed
 
+                    # Pacing leve para evitar bloqueio anti-flood de servidores IMAP
+                    if i > 1 and i % 50 == 0:
+                        time.sleep(0.05)
+
+                    fetch_data = None
+                    for attempt in range(1, 4):
+                        try:
+                            typ, fetch_data = client.conn.uid(
+                                "FETCH", str(uid), "(RFC822 FLAGS INTERNALDATE)"
+                            )
+                            if typ == "OK" and fetch_data:
+                                break
+                        except Exception as fetch_err:
+                            if self._is_connection_loss(fetch_err):
+                                progress.add_log(
+                                    f"Conexão interrompida no UID {uid} ({fetch_err}). Reconectando automaticamente (tentativa {attempt}/3)..."
+                                )
+                                client.disconnect()
+                                time.sleep(2 * attempt)
+                                try:
+                                    client.connect()
+                                    self._select_folder_with_retry(client, folder_raw, folder_name, progress, 2)
+                                    continue
+                                except Exception:
+                                    pass
+                            else:
+                                progress.add_log(f"Erro ao obter UID {uid} na pasta {folder_name}: {fetch_err}")
+                                break
+
+                    if not fetch_data:
+                        progress.add_log(f"Falha definitiva ao obter UID {uid} na pasta {folder_name}.")
+                        total_errors_this_run += 1
+                        progress.error_count += 1
+                        continue
+
+                    # Extrai bytes do RFC822 e metadados
+                    raw_bytes = None
+                    flags_str = ""
+                    internal_date = None
+
                     try:
-                        typ, fetch_data = client.conn.uid(
-                            "FETCH", str(uid), "(RFC822 FLAGS INTERNALDATE)"
-                        )
-                        if typ != "OK" or not fetch_data:
-                            progress.add_log(f"Erro ao obter UID {uid} na pasta {folder_name}")
-                            total_errors_this_run += 1
-                            continue
-
-                        # Extrai bytes do RFC822 e metadados
-                        raw_bytes = None
-                        flags_str = ""
-                        internal_date = None
-
                         for part in fetch_data:
                             if isinstance(part, tuple):
                                 header_info = part[0].decode("latin1", errors="replace")
-                                # Tenta pegar flags
                                 fl_match = re.search(r"FLAGS \(([^)]*)\)", header_info)
                                 if fl_match:
                                     flags_str = fl_match.group(1)
@@ -415,8 +500,8 @@ class BackupRunner:
                             if on_progress:
                                 on_progress(progress.to_dict())
 
-                    except Exception as fetch_err:
-                        progress.add_log(f"Falha ao processar mensagem UID {uid}: {fetch_err}")
+                    except Exception as parse_err:
+                        progress.add_log(f"Falha ao persistir mensagem UID {uid}: {parse_err}")
                         total_errors_this_run += 1
                         progress.error_count += 1
 
