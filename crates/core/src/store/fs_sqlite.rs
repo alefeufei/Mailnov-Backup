@@ -190,6 +190,13 @@ impl Store for FsSqliteStore {
         let root = self.root.clone();
         let tx = self.conn.transaction()?;
         let acc_id = account_id(&tx, account)?;
+        let prev_validity: Option<u32> = tx
+            .query_row(
+                "SELECT uidvalidity FROM folder WHERE account_id = ?1 AND path = ?2",
+                params![acc_id, folder],
+                |r| r.get(0),
+            )
+            .optional()?;
         tx.execute(
             "INSERT INTO folder(account_id, path, uidvalidity, last_uid) VALUES (?1, ?2, ?3, 0)
              ON CONFLICT(account_id, path) DO UPDATE SET uidvalidity = excluded.uidvalidity",
@@ -200,6 +207,13 @@ impl Store for FsSqliteStore {
             params![acc_id, folder],
             |r| r.get(0),
         )?;
+        if matches!(prev_validity, Some(v) if v != 0 && v != uidvalidity) {
+            // UIDs were renumbered: keep old locations, but detach them from their stale UIDs.
+            tx.execute(
+                "UPDATE message_location SET uid = NULL WHERE folder_id = ?1",
+                [folder_id],
+            )?;
+        }
         let mut out = BatchOutcome::default();
         for m in batch {
             let sha = sha256_hex(&m.bytes);
@@ -234,11 +248,35 @@ impl Store for FsSqliteStore {
                     tx.last_insert_rowid()
                 }
             };
-            tx.execute(
-                "INSERT OR REPLACE INTO message_location(message_id, folder_id, uid, flags, internal_date)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![message_id, folder_id, m.uid, m.flags.join(" "), m.internal_date],
-            )?;
+            let same: Option<i64> = tx
+                .query_row(
+                    "SELECT message_id FROM message_location WHERE folder_id = ?1 AND uid = ?2",
+                    params![folder_id, m.uid],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            match same {
+                Some(mid) if mid == message_id => {
+                    tx.execute(
+                        "UPDATE message_location SET flags = ?1, internal_date = ?2 WHERE folder_id = ?3 AND uid = ?4",
+                        params![m.flags.join(" "), m.internal_date, folder_id, m.uid],
+                    )?;
+                }
+                other => {
+                    if other.is_some() {
+                        // server inconsistency: keep the old row, detach its uid
+                        tx.execute(
+                            "UPDATE message_location SET uid = NULL WHERE folder_id = ?1 AND uid = ?2",
+                            params![folder_id, m.uid],
+                        )?;
+                    }
+                    tx.execute(
+                        "INSERT INTO message_location(message_id, folder_id, uid, flags, internal_date)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![message_id, folder_id, m.uid, m.flags.join(" "), m.internal_date],
+                    )?;
+                }
+            }
         }
         fault_check!(fault, AfterEmlWrite);
         tx.execute(

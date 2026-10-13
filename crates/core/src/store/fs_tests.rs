@@ -168,3 +168,30 @@ fn flags_update_and_export_state() {
     s.mark_exported("t", &sha, "INBOX").unwrap();
     assert!(s.export_done("t", &sha, "INBOX").unwrap());
 }
+
+#[test]
+fn uid_collision_after_uidvalidity_change_keeps_old_location() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = FsSqliteStore::open(dir.path()).unwrap();
+    s.commit_batch("me", "INBOX", 10, &[raw(1, 1)], 1).unwrap();
+    s.commit_batch("me", "INBOX", 11, &[raw(1, 2)], 1).unwrap();
+    let msgs = s.messages("me").unwrap();
+    let shas: Vec<_> = msgs.iter().map(|m| m.sha256.clone()).collect();
+    assert_eq!(msgs.len(), 2);
+    assert!(shas.contains(&sha256_hex(&eml(1))) && shas.contains(&sha256_hex(&eml(2))));
+    assert_eq!(walk_eml(dir.path()).len(), 2);
+    assert!(s.has_message_id("me", "m1@x").unwrap());
+    // same uid, different message, same uidvalidity: old row kept with uid NULL
+    s.commit_batch("me", "INBOX", 11, &[raw(1, 3)], 1).unwrap();
+    assert_eq!(s.messages("me").unwrap().len(), 3);
+}
+
+#[test]
+fn retry_of_same_batch_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = FsSqliteStore::open(dir.path()).unwrap();
+    let batch = [raw(1, 1), raw(2, 2)];
+    s.commit_batch("me", "INBOX", 1, &batch, 2).unwrap();
+    s.commit_batch("me", "INBOX", 1, &batch, 2).unwrap();
+    assert_eq!(s.messages("me").unwrap().len(), 2);
+}
