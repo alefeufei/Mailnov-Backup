@@ -25,6 +25,7 @@ from mailstore.models import (
     ExportImapRequest,
     ExportMboxRequest,
     ExportPstRequest,
+    ImapConfig,
     ProfileCreateRequest,
     ProfileUpdateRequest,
     SearchQuery,
@@ -88,7 +89,14 @@ def api_detect_provider(email: str = Query(...)):
 
 @app.post("/api/test-connection")
 def api_test_connection(req: TestConnectionRequest):
-    cfg = req
+    cfg = ImapConfig(
+        host=req.host,
+        port=req.port,
+        ssl_mode=req.ssl_mode,
+        username=req.username,
+        password=req.password,
+        timeout=getattr(req, "timeout", 30)
+    )
     res = test_imap_connection(cfg)
     return res
 

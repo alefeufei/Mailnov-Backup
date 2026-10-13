@@ -142,3 +142,4 @@ class TestConnectionRequest(BaseModel):
     ssl_mode: str = "SSL"
     username: str
     password: str
+    timeout: int = 30

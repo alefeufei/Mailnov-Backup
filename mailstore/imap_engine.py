@@ -96,7 +96,7 @@ class ImapClient:
         host = self.config.host
         port = self.config.port
         ssl_mode = self.config.ssl_mode.upper()
-        timeout = self.config.timeout
+        timeout = getattr(self.config, "timeout", 30)
 
         try:
             if ssl_mode == "SSL":

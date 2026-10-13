@@ -68,6 +68,21 @@ class TestRestApi(unittest.TestCase):
         self.assertIn("total_checked", data)
         self.assertIn("valid_count", data)
 
+    def test_test_connection_endpoint(self):
+        payload = {
+            "host": "127.0.0.1",
+            "port": 993,
+            "ssl_mode": "SSL",
+            "username": "user@test.com",
+            "password": "pwd"
+        }
+        res = self.client.post("/api/test-connection", json=payload)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        # Não deve falhar com AttributeError: timeout
+        self.assertIn("success", data)
+        self.assertNotIn("'TestConnectionRequest' object has no attribute 'timeout'", data.get("message", ""))
+
 
 if __name__ == "__main__":
     unittest.main()
