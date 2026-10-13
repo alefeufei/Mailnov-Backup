@@ -198,7 +198,6 @@ impl ImapConnection {
     /// reconnects lazily) and the error is returned classified, so the caller can decide
     /// whether the operation may have taken effect (`Failure::Transient`) or was rejected
     /// (`Failure::Fatal`).
-    #[allow(dead_code)] // first user is ImapTarget (Task 5)
     pub(crate) fn run_once<R>(
         &mut self,
         f: impl FnOnce(&mut Session) -> imap::Result<R>,
@@ -298,6 +297,7 @@ pub(crate) mod test_support {
         handler: Mutex<Box<Handler>>,
         connections: Mutex<usize>,
         log: Mutex<Vec<(usize, String)>>,
+        literals: Mutex<Vec<(usize, Vec<u8>)>>,
     }
 
     impl Server {
@@ -306,7 +306,14 @@ pub(crate) mod test_support {
                 handler: Mutex::new(Box::new(h)),
                 connections: Mutex::new(0),
                 log: Mutex::new(vec![]),
+                literals: Mutex::new(vec![]),
             })
+        }
+        /// Message bodies sent as `{N}` literals (connection index, bytes). The handler is
+        /// called with the pseudo command `LITERAL` once a literal has been received, and its
+        /// reply may use `{tag}` of the command that announced it.
+        pub(crate) fn literals(&self) -> Vec<(usize, Vec<u8>)> {
+            self.literals.lock().unwrap().clone()
         }
         /// Commands seen (connection index starting at 1, command text without tag).
         pub(crate) fn commands(&self) -> Vec<(usize, String)> {
@@ -323,6 +330,7 @@ pub(crate) mod test_support {
         written: Vec<u8>,
         out: VecDeque<u8>,
         closed: bool,
+        literal: Option<(String, usize)>,
     }
 
     impl Read for MockStream {
@@ -341,13 +349,47 @@ pub(crate) mod test_support {
         }
     }
 
+    impl MockStream {
+        fn respond(&mut self, tag: &str, cmd: &str) {
+            let reply = (self.server.handler.lock().unwrap())(self.conn, cmd);
+            let (text, close) = match reply {
+                Reply::Text(t) => (t, false),
+                Reply::Drop(t) => (t, true),
+            };
+            self.out.extend(text.replace("{tag}", tag).bytes());
+            if close {
+                self.closed = true;
+            }
+        }
+    }
+
+    /// `{N}` at the end of a command announces a literal of N bytes.
+    fn literal_len(cmd: &str) -> Option<usize> {
+        let inner = cmd.strip_suffix('}')?;
+        inner.rsplit_once('{')?.1.parse().ok()
+    }
+
     impl Write for MockStream {
         fn write(&mut self, data: &[u8]) -> io::Result<usize> {
             if self.closed {
                 return Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed"));
             }
             self.written.extend_from_slice(data);
-            while let Some(pos) = self.written.windows(2).position(|w| w == b"\r\n") {
+            loop {
+                if let Some((tag, n)) = self.literal.clone() {
+                    if self.written.len() < n + 2 {
+                        break;
+                    }
+                    let body: Vec<u8> = self.written.drain(..n).collect();
+                    self.written.drain(..2);
+                    self.server.literals.lock().unwrap().push((self.conn, body));
+                    self.literal = None;
+                    self.respond(&tag, "LITERAL");
+                    continue;
+                }
+                let Some(pos) = self.written.windows(2).position(|w| w == b"\r\n") else {
+                    break;
+                };
                 let line: Vec<u8> = self.written.drain(..pos + 2).collect();
                 let line = String::from_utf8_lossy(&line[..pos]).to_string();
                 let (tag, cmd) = line.split_once(' ').unwrap_or((&line, ""));
@@ -356,14 +398,9 @@ pub(crate) mod test_support {
                     .lock()
                     .unwrap()
                     .push((self.conn, cmd.to_string()));
-                let reply = (self.server.handler.lock().unwrap())(self.conn, cmd);
-                let (text, close) = match reply {
-                    Reply::Text(t) => (t, false),
-                    Reply::Drop(t) => (t, true),
-                };
-                self.out.extend(text.replace("{tag}", tag).bytes());
-                if close {
-                    self.closed = true;
+                self.respond(tag, cmd);
+                if let Some(n) = literal_len(cmd) {
+                    self.literal = Some((tag.to_string(), n));
                 }
             }
             Ok(data.len())
@@ -394,6 +431,7 @@ pub(crate) mod test_support {
                 written: vec![],
                 out: VecDeque::from(b"* OK mock ready\r\n".to_vec()),
                 closed: false,
+                literal: None,
             };
             let mut client = imap::Client::new(Box::new(stream) as imap::Connection);
             client.read_greeting()?;

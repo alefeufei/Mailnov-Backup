@@ -77,3 +77,92 @@ fn archive_from_dovecot() {
     let again = archive(&mut source, &mut store, &opts, &tx).unwrap();
     assert_eq!(again.added, 0);
 }
+
+/// Exports a few messages into a fresh nested folder of the (writable) test account and reads
+/// them back with `ImapSource`. Same server requirements as `archive_from_dovecot`.
+#[test]
+#[ignore = "requires `docker compose up` in tests/dovecot (see README there)"]
+fn export_to_dovecot() {
+    use mailbackup_core::sync::export;
+    use mailbackup_core::testing::FakeSource;
+    use mailbackup_core::{ImapTarget, MailTarget};
+
+    let host = env_or("MAILBACKUP_TEST_IMAP_HOST", "localhost");
+    let port: u16 = env_or("MAILBACKUP_TEST_IMAP_PORT", "993").parse().unwrap();
+    let user = env_or("MAILBACKUP_TEST_IMAP_USER", "testuser");
+    let password = env_or("MAILBACKUP_TEST_IMAP_PASSWORD", "testpass");
+    let auth = || Box::new(PasswordAuth::new(user.clone(), password.clone()));
+
+    // A unique folder per run so repeated runs do not see each other's messages.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let folder = format!("mailbackup-test-{nonce}/Subpasta ção");
+
+    let bodies: Vec<Vec<u8>> = (1..=2)
+        .map(|n| {
+            format!("Message-ID: <exp{nonce}-{n}@x>\r\nSubject: export {n}\r\n\r\nbody {n}\r\n")
+                .into_bytes()
+        })
+        .collect();
+    let mut fake = FakeSource::new();
+    fake.add_folder(&folder, 1);
+    fake.add_message_dated(
+        &folder,
+        1,
+        bodies[0].clone(),
+        &["\\Seen", "\\Flagged"],
+        Some(1_700_000_000),
+    );
+    fake.add_message_dated(&folder, 2, bodies[1].clone(), &[], Some(1_600_000_000));
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let opts = ArchiveOptions {
+        account: "exp".into(),
+        folders: None,
+        since: None,
+        batch_size: 50,
+    };
+    let (tx, _rx) = channel::<Event>();
+    archive(&mut fake, &mut store, &opts, &tx).unwrap();
+
+    let mut target = ImapTarget::connect(&host, port, TlsMode::Implicit, auth()).unwrap();
+    let (tx, _rx) = channel::<Event>();
+    let summary = export(&mut store, &mut target, "exp", &tx).unwrap();
+    assert_eq!((summary.added, summary.failed), (2, 0));
+    // Re-running (even with a new connection) sends nothing: export_state remembers.
+    let mut target2 = ImapTarget::connect(&host, port, TlsMode::Implicit, auth()).unwrap();
+    assert_eq!(target2.id(), target.id());
+    assert_eq!(
+        export(&mut store, &mut target2, "exp", &tx).unwrap().added,
+        0
+    );
+
+    let mut source = ImapSource::connect(&host, port, TlsMode::Implicit, auth()).unwrap();
+    let folders = source.list_folders().unwrap();
+    assert!(folders.contains(&folder), "{folders:?}");
+    source.select(&folder).unwrap();
+    let uids = source.uids_after(0, None).unwrap();
+    assert_eq!(uids.len(), 2);
+    let got = source.fetch(&uids).unwrap();
+    for (body, flags, date) in [
+        (
+            &bodies[0],
+            vec!["\\Seen".to_string(), "\\Flagged".to_string()],
+            1_700_000_000,
+        ),
+        (&bodies[1], vec![], 1_600_000_000),
+    ] {
+        let m = got
+            .iter()
+            .find(|m| &m.bytes == body)
+            .expect("message exported");
+        let mut f = m.flags.clone();
+        f.sort();
+        let mut want = flags;
+        want.sort();
+        assert_eq!(f, want);
+        assert_eq!(m.internal_date, Some(date));
+    }
+}

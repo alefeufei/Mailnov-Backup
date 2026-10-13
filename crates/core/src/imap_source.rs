@@ -14,8 +14,11 @@ const FETCH_CHUNK: usize = 100;
 /// Read-only IMAP mailbox: never sets `\Seen` (`BODY.PEEK`) and opens folders with `EXAMINE`.
 pub struct ImapSource {
     conn: ImapConnection,
-    /// Decoded folder name -> name exactly as the server sent it (modified UTF-7).
+    /// Canonical folder path (components joined by "/") -> name exactly as the server sent it
+    /// (modified UTF-7, server delimiter).
     wire_names: HashMap<String, String>,
+    /// Hierarchy delimiter learned from the last `LIST`, used for names that were never listed.
+    delimiter: Option<String>,
 }
 
 impl std::fmt::Debug for ImapSource {
@@ -55,15 +58,49 @@ impl ImapSource {
         Ok(ImapSource {
             conn,
             wire_names: HashMap::new(),
+            delimiter: None,
         })
     }
 
+    /// Server-side name of a canonical ("/"-separated) folder path.
     fn wire_name(&self, folder: &str) -> String {
         self.wire_names
             .get(folder)
             .cloned()
-            .unwrap_or_else(|| encode_folder_name(folder))
+            .unwrap_or_else(|| to_wire_path(folder, self.delimiter.as_deref().unwrap_or("/")))
     }
+}
+
+/// Canonical path of a server mailbox name: split on the server delimiter, decode each
+/// component from modified UTF-7 and join with "/". (A literal "/" inside a component of a
+/// server whose delimiter is not "/" cannot be told apart from a level separator: known
+/// limitation.)
+fn to_canonical_path(wire: &str, delimiter: Option<&str>) -> String {
+    match delimiter {
+        Some(d) if !d.is_empty() => wire
+            .split(d)
+            .map(decode_folder_name)
+            .collect::<Vec<_>>()
+            .join("/"),
+        _ => decode_folder_name(wire),
+    }
+}
+
+/// Inverse of [`to_canonical_path`] for names the server never listed. `INBOX` (first
+/// component, any case) is the one name with a fixed spelling.
+pub(crate) fn to_wire_path(canonical: &str, delimiter: &str) -> String {
+    canonical
+        .split('/')
+        .enumerate()
+        .map(|(i, c)| {
+            if i == 0 && c.eq_ignore_ascii_case("INBOX") {
+                "INBOX".to_string()
+            } else {
+                encode_folder_name(c)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(delimiter)
 }
 
 /// Extract the Message-ID value (without angle brackets) from a header block.
@@ -115,6 +152,7 @@ impl MailSource for ImapSource {
         let names = self.conn.run(|s| s.list(Some(""), Some("*")))?;
         let mut out = Vec::new();
         let mut wire = HashMap::new();
+        let mut delimiter: Option<String> = None;
         for n in names.iter() {
             let skip = n.attributes().iter().any(|a| match a {
                 NameAttribute::NoSelect => true,
@@ -124,12 +162,18 @@ impl MailSource for ImapSource {
             if skip {
                 continue;
             }
-            // The decoded name keeps the server's hierarchy delimiter.
-            let decoded = decode_folder_name(n.name());
-            wire.insert(decoded.clone(), n.name().to_string());
-            out.push(decoded);
+            if delimiter.is_none() {
+                delimiter = n.delimiter().map(str::to_string);
+            }
+            // The archive uses "/" regardless of the server's hierarchy delimiter.
+            let canonical = to_canonical_path(n.name(), n.delimiter());
+            wire.insert(canonical.clone(), n.name().to_string());
+            out.push(canonical);
         }
         self.wire_names = wire;
+        if delimiter.is_some() {
+            self.delimiter = delimiter;
+        }
         Ok(out)
     }
 
@@ -593,6 +637,47 @@ mod source_tests {
             cmds.contains(&"EXAMINE \"weird &!!- name\"".to_string()),
             "{cmds:?}"
         );
+    }
+
+    #[test]
+    fn dot_delimiter_server_is_presented_with_canonical_slash_and_mapped_back() {
+        let server = Server::new(|_, cmd| {
+            base(cmd).unwrap_or_else(|| {
+                if cmd.starts_with("LIST") {
+                    Reply::Text(
+                        "* LIST () \".\" \"INBOX\"\r\n\
+                         * LIST (\\Noselect) \".\" \"Arquivo\"\r\n\
+                         * LIST () \".\" \"INBOX.Enviados\"\r\n\
+                         * LIST () \".\" \"Arquivo.Caixa de &AOcA4w-o\"\r\n\
+                         {tag} OK done\r\n"
+                            .into(),
+                    )
+                } else {
+                    Reply::Text(
+                        "* OK [UIDVALIDITY 5] v\r\n* OK [UIDNEXT 2] n\r\n{tag} OK [READ-ONLY] ok\r\n"
+                            .into(),
+                    )
+                }
+            })
+        });
+        let mut s = source(&server);
+        let f = s.list_folders().unwrap();
+        assert_eq!(f, vec!["INBOX", "INBOX/Enviados", "Arquivo/Caixa de ção"]);
+        s.select("INBOX/Enviados").unwrap();
+        s.select("Arquivo/Caixa de ção").unwrap();
+        // INBOX is case-insensitive and also a hierarchy root; names never listed use the
+        // delimiter learned from the server.
+        s.select("inbox").unwrap();
+        s.select("Inbox/Novo").unwrap();
+        let cmds: Vec<String> = server.commands().into_iter().map(|(_, c)| c).collect();
+        for want in [
+            "EXAMINE \"INBOX.Enviados\"",
+            "EXAMINE \"Arquivo.Caixa de &AOcA4w-o\"",
+            "EXAMINE \"INBOX\"",
+            "EXAMINE \"INBOX.Novo\"",
+        ] {
+            assert!(cmds.contains(&want.to_string()), "{want} not in {cmds:?}");
+        }
     }
 
     #[test]

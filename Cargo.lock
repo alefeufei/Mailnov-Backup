@@ -438,6 +438,7 @@ dependencies = [
 name = "mailbackup-core"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "imap",
  "imap-proto",
  "mail-parser",
