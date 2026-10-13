@@ -6,6 +6,8 @@ pub enum Error {
     Db(String),
     #[error("imap error: {0}")]
     Imap(String),
+    #[error("connection error: {0}")]
+    Connection(String),
     #[error("authentication error: {0}")]
     Auth(String),
     #[error("config error: {0}")]

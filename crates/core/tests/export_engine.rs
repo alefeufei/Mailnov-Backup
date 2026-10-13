@@ -1,7 +1,7 @@
 use mailbackup_core::store::{FsSqliteStore, Store};
 use mailbackup_core::sync::{archive, export, ArchiveOptions};
 use mailbackup_core::testing::FakeSource;
-use mailbackup_core::{EmlDirTarget, Error, Event, MailTarget, Result, RunSummary};
+use mailbackup_core::{EmlDirTarget, Error, Event, MailTarget, RawMessage, Result, RunSummary};
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::path::Path;
@@ -30,6 +30,8 @@ struct FakeTarget {
     fail_bytes: HashSet<Vec<u8>>,
     /// Every `put` fails with this kind of error (0 = Imap, 1 = Io).
     fail_all_with: Option<u8>,
+    /// After this many successful puts every `put` fails with `Error::Connection`.
+    connection_down_after: Option<usize>,
     fail_ensure: HashSet<String>,
 }
 
@@ -52,9 +54,17 @@ impl MailTarget for FakeTarget {
         date: Option<i64>,
     ) -> Result<()> {
         match self.fail_all_with {
-            Some(0) => return Err(Error::Imap("down".into())),
-            Some(_) => return Err(Error::Io(std::io::Error::other("disk"))),
+            Some(0) => return Err(Error::Connection("down".into())),
+            Some(1) => return Err(Error::Io(std::io::Error::other("disk"))),
+            Some(2) => return Err(Error::Auth("rejected".into())),
+            Some(_) => return Err(Error::Imap("NO [TOOBIG] message too large".into())),
             None => {}
+        }
+        if self
+            .connection_down_after
+            .is_some_and(|n| self.puts.len() >= n)
+        {
+            return Err(Error::Connection("lost".into()));
         }
         if self.fail_bytes.contains(bytes) {
             return Err(Error::Imap("rejected".into()));
@@ -232,20 +242,143 @@ fn a_single_failing_message_alone_is_not_a_fatal_error() {
     assert_eq!((s.added, s.failed), (0, 1));
 }
 
-#[test]
-fn every_message_failing_with_the_same_kind_of_error_aborts_the_run() {
-    let (_d, mut store) = setup();
-    let mut t = FakeTarget {
-        fail_all_with: Some(0),
-        ..Default::default()
-    };
-    let (r, _) = run(&mut store, &mut t);
-    assert!(matches!(r, Err(Error::Imap(_))), "{r:?}");
-    // Nothing was marked, so a healthy target gets everything.
-    let mut ok = FakeTarget::default();
-    assert_eq!(run(&mut store, &mut ok).0.unwrap().added, 3);
+fn inbox_store(n: u32, extra_folder: Option<(&str, u32)>) -> (tempfile::TempDir, FsSqliteStore) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = FakeSource::new();
+    src.add_folder("INBOX", 1);
+    for i in 1..=n {
+        src.add_message("INBOX", i, eml(i), &[]);
+    }
+    if let Some((f, count)) = extra_folder {
+        src.add_folder(f, 1);
+        for i in 1..=count {
+            src.add_message(f, i, eml(100 + i), &[]);
+        }
+    }
+    populate(&mut src, &mut store);
+    (dir, store)
 }
 
+#[test]
+fn bad_first_folder_does_not_stop_later_folders() {
+    // "A-ruim" sorts (and is archived) before INBOX.
+    let (_d, mut store) = inbox_store(2, Some(("A-ruim", 3)));
+    let mut t = FakeTarget::default();
+    t.fail_ensure.insert("A-ruim".into());
+    let (r, events) = run(&mut store, &mut t);
+    let s = r.unwrap();
+    assert_eq!((s.added, s.failed), (2, 3));
+    assert!(t.puts.iter().all(|p| p.folder == "INBOX"));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, Event::MessageFailed { folder, .. } if folder == "A-ruim"))
+            .count(),
+        3
+    );
+    assert_eq!(events.last(), Some(&Event::Finished(s)));
+}
+
+#[test]
+fn per_message_server_rejections_never_abort_even_if_all_fail() {
+    let (_d, mut store) = inbox_store(2, None);
+    let mut t = FakeTarget {
+        fail_all_with: Some(3),
+        ..Default::default()
+    };
+    let (r, events) = run(&mut store, &mut t);
+    let s = r.expect("rejections are not fatal");
+    assert_eq!((s.added, s.failed), (0, 2));
+    assert_eq!(events.last(), Some(&Event::Finished(s)));
+    // More than the abort threshold of rejected messages still does not abort.
+    let (_d, mut store) = inbox_store(6, None);
+    let mut t = FakeTarget {
+        fail_all_with: Some(3),
+        ..Default::default()
+    };
+    assert_eq!(run(&mut store, &mut t).0.unwrap().failed, 6);
+}
+
+#[test]
+fn three_consecutive_connection_failures_abort_and_keep_earlier_exports() {
+    let (_d, mut store) = inbox_store(6, None);
+    let mut t = FakeTarget {
+        connection_down_after: Some(1),
+        ..Default::default()
+    };
+    let (r, events) = run(&mut store, &mut t);
+    assert!(matches!(r, Err(Error::Connection(_))), "{r:?}");
+    assert_eq!(t.puts.len(), 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, Event::MessageFailed { .. }))
+            .count(),
+        3,
+        "stops after 3"
+    );
+    assert!(matches!(events.last(), Some(Event::Finished(s)) if s.added == 1 && s.failed == 3));
+    let mut ok = FakeTarget::default();
+    let s = run(&mut store, &mut ok).0.unwrap();
+    assert_eq!(
+        (s.added, s.duplicates),
+        (5, 1),
+        "the first export stayed marked"
+    );
+}
+
+#[test]
+fn a_rejection_between_connection_failures_resets_the_streak() {
+    let (_d, mut store) = inbox_store(5, None);
+    struct Flaky(usize);
+    impl MailTarget for Flaky {
+        fn id(&self) -> String {
+            "fake://flaky".into()
+        }
+        fn ensure_folder(&mut self, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn put(&mut self, _: &str, _: &[u8], _: &[String], _: Option<i64>) -> Result<()> {
+            self.0 += 1;
+            if self.0.is_multiple_of(3) {
+                Err(Error::Imap("NO".into()))
+            } else {
+                Err(Error::Connection("lost".into()))
+            }
+        }
+    }
+    let s = run(&mut store, &mut Flaky(0)).0.unwrap();
+    assert_eq!(s.failed, 5);
+}
+
+#[test]
+fn a_single_auth_error_aborts_at_once() {
+    let (_d, mut store) = inbox_store(5, None);
+    let mut t = FakeTarget {
+        fail_all_with: Some(2),
+        ..Default::default()
+    };
+    let (r, events) = run(&mut store, &mut t);
+    assert!(matches!(r, Err(Error::Auth(_))), "{r:?}");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, Event::MessageFailed { .. }))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn three_consecutive_io_failures_abort() {
+    let (_d, mut store) = inbox_store(5, None);
+    let mut t = FakeTarget {
+        fail_all_with: Some(1),
+        ..Default::default()
+    };
+    assert!(matches!(run(&mut store, &mut t).0, Err(Error::Io(_))));
+}
 #[test]
 fn failures_of_different_kinds_do_not_abort() {
     let (_d, mut store) = setup();
@@ -289,11 +422,19 @@ fn folder_that_cannot_be_ensured_fails_its_messages_and_continues() {
 fn same_message_twice_in_one_folder_is_exported_once() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = FsSqliteStore::open(dir.path()).unwrap();
-    let mut src = FakeSource::new();
-    src.add_folder("INBOX", 1);
-    src.add_message("INBOX", 1, eml(1), &[]);
-    src.add_message("INBOX", 2, eml(1), &[]);
-    populate(&mut src, &mut store);
+    // The same message committed under two UIDVALIDITYs: two location rows, one (sha, folder).
+    let raw = |uid| RawMessage {
+        uid,
+        flags: vec![],
+        internal_date: Some(5),
+        bytes: eml(1),
+    };
+    store.commit_batch(ACC, "INBOX", 1, &[raw(1)], 1).unwrap();
+    store.commit_batch(ACC, "INBOX", 2, &[raw(1)], 1).unwrap();
+    let rows = store.messages(ACC).unwrap();
+    assert_eq!(rows.len(), 2, "precondition: {rows:?}");
+    assert_eq!(rows[0].sha256, rows[1].sha256);
+    assert_eq!(rows[0].folder, rows[1].folder);
     let mut t = FakeTarget::default();
     let s = run(&mut store, &mut t).0.unwrap();
     assert_eq!(t.puts.len(), 1);

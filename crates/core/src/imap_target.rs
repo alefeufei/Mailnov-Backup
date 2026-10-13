@@ -118,7 +118,8 @@ fn check_wire_name(name: &str) -> Result<()> {
 fn already_exists(no: &imap::error::No) -> bool {
     format!("{:?} {}", no.code, no.information)
         .to_ascii_lowercase()
-        .contains("exist")
+        .replace(" ", "")
+        .contains("alreadyexists")
 }
 
 impl ImapTarget {
@@ -216,7 +217,7 @@ impl MailTarget for ImapTarget {
         });
         match sent {
             Ok(_) => Ok(()),
-            Err(Failure::Transient(e)) => Err(Error::Imap(format!(
+            Err(Failure::Transient(e)) => Err(Error::Connection(format!(
                 "APPEND to {folder} interrupted, delivery unconfirmed (not retried): {e}"
             ))),
             Err(Failure::Fatal(e)) => Err(e),
@@ -316,6 +317,25 @@ mod tests {
         assert!(c.contains(&"SELECT \"INBOX\"".to_string()), "{c:?}");
         assert!(!c.contains(&"CREATE \"INBOX\"".to_string()), "{c:?}");
         assert!(c.contains(&"CREATE \"INBOX/Sub\"".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn nonexistent_parent_error_is_not_mistaken_for_already_exists() {
+        let server = Server::new(|_, cmd| {
+            if cmd.starts_with("LOGIN") {
+                Reply::Text("{tag} OK\r\n".into())
+            } else if cmd.starts_with("LIST") {
+                Reply::Text("* LIST (\\Noselect) \"/\" \"\"\r\n{tag} OK\r\n".into())
+            } else if cmd.starts_with("CREATE") {
+                Reply::Text("{tag} NO [NONEXISTENT] Parent mailbox does not exist\r\n".into())
+            } else {
+                Reply::Text("{tag} OK\r\n".into())
+            }
+        });
+        let mut t = target(&server);
+        let err = t.ensure_folder("Novo").unwrap_err();
+        assert!(matches!(err, Error::Imap(_)), "{err:?}");
+        assert!(!cmds(&server).iter().any(|c| c.starts_with("SELECT")));
     }
 
     #[test]
@@ -460,7 +480,7 @@ mod tests {
         t.ensure_folder("INBOX").unwrap();
         let err = t.put("INBOX", b"first", &[], None).unwrap_err();
         assert!(
-            matches!(&err, Error::Imap(m) if m.contains("not retried")),
+            matches!(&err, Error::Connection(m) if m.contains("not retried")),
             "{err:?}"
         );
         assert_eq!(

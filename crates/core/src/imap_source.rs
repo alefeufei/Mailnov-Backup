@@ -770,7 +770,7 @@ mod source_tests {
         });
         let mut s = source(&server);
         let r = s.fetch(&[5, 6]);
-        assert!(matches!(r, Err(Error::Imap(_))), "{r:?}");
+        assert!(matches!(r, Err(Error::Connection(_))), "{r:?}");
     }
 
     #[test]

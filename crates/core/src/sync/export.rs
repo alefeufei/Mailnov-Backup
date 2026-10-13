@@ -2,11 +2,10 @@ use crate::store::{Store, StoredMessage};
 use crate::target::MailTarget;
 use crate::{Error, Event, Result, RunSummary};
 use std::collections::HashSet;
-use std::mem::{discriminant, Discriminant};
 use std::sync::mpsc::Sender;
 
-/// With no success at all, this many failures of one kind in a row mean the destination is down
-/// and the run stops instead of hammering it with every remaining message.
+/// This many consecutive connection-level failures mean the destination is down and the run
+/// stops instead of hammering it with every remaining message.
 const GIVE_UP_AFTER: usize = 3;
 
 fn emit(events: &Sender<Event>, e: Event) {
@@ -14,40 +13,10 @@ fn emit(events: &Sender<Event>, e: Event) {
     let _ = events.send(e);
 }
 
-/// Tracks whether the run is failing wholesale (every attempt failed with the same kind of error).
-#[derive(Default)]
-struct Health {
-    attempted: usize,
-    succeeded: usize,
-    kind: Option<Discriminant<Error>>,
-    mixed: bool,
-    last: Option<Error>,
-}
-
-impl Health {
-    fn ok(&mut self) {
-        self.attempted += 1;
-        self.succeeded += 1;
-    }
-
-    fn failed(&mut self, e: Error) {
-        self.attempted += 1;
-        let k = discriminant(&e);
-        match self.kind {
-            None => self.kind = Some(k),
-            Some(prev) if prev != k => self.mixed = true,
-            _ => {}
-        }
-        self.last = Some(e);
-    }
-
-    fn all_failed_alike(&self) -> bool {
-        self.succeeded == 0 && !self.mixed && self.last.is_some()
-    }
-
-    fn failures(&self) -> usize {
-        self.attempted - self.succeeded
-    }
+/// Failures that say something about the destination or the local disk as a whole rather than
+/// about one message or folder (a server `NO`/`BAD` is `Error::Imap` and never counts).
+fn is_systemic(e: &Error) -> bool {
+    matches!(e, Error::Connection(_) | Error::Auth(_) | Error::Io(_))
 }
 
 /// Copy every archived message of `account` that `target` has not received yet.
@@ -56,8 +25,10 @@ impl Health {
 /// failed message is retried by the next run. The same message listed twice for one folder (a
 /// row with a UID and one without, after a UIDVALIDITY reconcile) is sent once.
 ///
-/// A failing message never aborts the run, unless nothing at all succeeds and every failure is
-/// the same kind of error (a dead destination): then the run stops with that error.
+/// Per-message and per-folder failures are reported (`MessageFailed`, counted in `failed`) and
+/// the run goes on. It stops with an error only for a rejected login (`Error::Auth`, at once) or
+/// after 3 consecutive connection-level failures (`Error::Connection`/`Io`); `Finished` is
+/// emitted before returning that error so the progress made is not lost.
 pub fn export(
     store: &mut dyn Store,
     target: &mut dyn MailTarget,
@@ -80,8 +51,9 @@ pub fn export(
         }
     }
 
-    let mut health = Health::default();
-    for (folder, msgs) in folders {
+    let mut streak = 0usize;
+    let mut fatal: Option<Error> = None;
+    'folders: for (folder, msgs) in folders {
         let mut pending = vec![];
         for m in msgs {
             if store.export_done(&target_id, &m.sha256, &folder)? {
@@ -101,29 +73,38 @@ pub fn export(
             },
         );
 
-        let mut folder_error: Option<String> = None;
+        // A folder that cannot be created fails only its own messages; they do not count toward
+        // the abort streak (the destination answered), except a rejected login.
         if let Err(e) = target.ensure_folder(&folder) {
-            folder_error = Some(e.to_string());
-            // Counted once here (it fixes the error kind); each of its messages repeats it below.
-            health.failed(e);
-            health.attempted -= 1;
+            let reason = format!("folder could not be created: {e}");
+            for m in &pending {
+                summary.failed += 1;
+                emit(
+                    events,
+                    Event::MessageFailed {
+                        folder: folder.clone(),
+                        uid: m.uid.unwrap_or(0),
+                        reason: reason.clone(),
+                    },
+                );
+            }
+            if matches!(e, Error::Auth(_)) {
+                fatal = Some(e);
+                break 'folders;
+            }
+            continue;
         }
 
         for m in pending {
             let uid = m.uid.unwrap_or(0);
-            let outcome = match &folder_error {
-                Some(reason) => Err(Error::Imap(format!(
-                    "folder could not be created: {reason}"
-                ))),
-                None => store
-                    .read_eml(&m.sha256)
-                    .and_then(|bytes| target.put(&folder, &bytes, &m.flags, m.internal_date)),
-            };
+            let outcome = store
+                .read_eml(&m.sha256)
+                .and_then(|bytes| target.put(&folder, &bytes, &m.flags, m.internal_date));
             match outcome {
                 Ok(()) => {
                     // Only now is the message known to be at the destination.
                     store.mark_exported(&target_id, &m.sha256, &folder)?;
-                    health.ok();
+                    streak = 0;
                     summary.added += 1;
                     emit(
                         events,
@@ -135,34 +116,35 @@ pub fn export(
                 }
                 Err(e) => {
                     summary.failed += 1;
-                    let reason = e.to_string();
-                    if folder_error.is_some() {
-                        health.attempted += 1; // same error as the folder's, already recorded
-                    } else {
-                        health.failed(e);
-                    }
                     emit(
                         events,
                         Event::MessageFailed {
                             folder: folder.clone(),
                             uid,
-                            reason,
+                            reason: e.to_string(),
                         },
                     );
+                    if matches!(e, Error::Auth(_)) {
+                        fatal = Some(e);
+                        break 'folders;
+                    }
+                    if is_systemic(&e) {
+                        streak += 1;
+                        if streak >= GIVE_UP_AFTER {
+                            fatal = Some(e);
+                            break 'folders;
+                        }
+                    } else {
+                        streak = 0;
+                    }
                 }
-            }
-            if health.all_failed_alike() && health.failures() >= GIVE_UP_AFTER {
-                return Err(health.last.take().expect("failures recorded"));
             }
         }
     }
 
-    // A run whose every attempt failed alike (two or more attempts: one bad message alone is
-    // just a bad message).
-    if health.all_failed_alike() && health.attempted >= 2 {
-        return Err(health.last.take().expect("failures recorded"));
-    }
-
     emit(events, Event::Finished(summary.clone()));
-    Ok(summary)
+    match fatal {
+        Some(e) => Err(e),
+        None => Ok(summary),
+    }
 }

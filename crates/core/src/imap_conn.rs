@@ -125,11 +125,10 @@ fn is_transient(e: &imap::Error) -> bool {
 }
 
 fn classify(e: imap::Error) -> Failure {
-    let err = Error::Imap(e.to_string());
     if is_transient(&e) {
-        Failure::Transient(err)
+        Failure::Transient(Error::Connection(e.to_string()))
     } else {
-        Failure::Fatal(err)
+        Failure::Fatal(Error::Imap(e.to_string()))
     }
 }
 
@@ -584,7 +583,7 @@ mod tests {
         });
         let (mut c, slept) = conn_for(&server);
         let err = c.run(|s| s.noop()).unwrap_err();
-        assert!(matches!(err, Error::Imap(_)), "{err:?}");
+        assert!(matches!(err, Error::Connection(_)), "{err:?}");
         assert_eq!(server.connection_count(), 3);
         assert_eq!(slept.lock().unwrap().len(), 2);
     }
