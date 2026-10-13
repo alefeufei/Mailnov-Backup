@@ -258,14 +258,28 @@ impl ImapConnection {
                     });
                 }
             };
-            if let Some((name, uidvalidity)) = &self.selected {
+            if let Some((name, uidvalidity)) = self.selected.clone() {
                 // Read-only: a backup must never change server state (e.g. \Recent).
-                let mb = session.examine(name).map_err(classify)?;
-                if mb.uid_validity != Some(*uidvalidity) {
-                    return Err(Failure::Fatal(Error::Imap(format!(
+                let gone = match session.examine(&name) {
+                    Ok(mb) if mb.uid_validity == Some(uidvalidity) => None,
+                    Ok(mb) => Some(format!(
                         "UIDVALIDITY of {name} changed during the run (was {uidvalidity}, now {:?}); the next run will reconcile",
                         mb.uid_validity
-                    ))));
+                    )),
+                    Err(e) => match classify(e) {
+                        Failure::Transient(e) => return Err(Failure::Transient(e)),
+                        Failure::Fatal(e) => Some(format!(
+                            "{name} could not be re-opened after a reconnect: {e}"
+                        )),
+                    },
+                };
+                if let Some(why) = gone {
+                    // The folder is unusable for the rest of the run, but the login is fine:
+                    // keep the session and forget the folder, so later commands (the next
+                    // folder's EXAMINE) neither reconnect nor try to re-open it again.
+                    self.selected = None;
+                    self.session = Some(session);
+                    return Err(Failure::Fatal(Error::FolderGone(why)));
                 }
             }
             self.session = Some(session);
@@ -627,7 +641,7 @@ mod tests {
         c.set_selected(Some(("INBOX".into(), 7)));
         let err = c.run(|s| s.noop()).unwrap_err();
         assert!(
-            matches!(&err, Error::Imap(m) if m.contains("UIDVALIDITY")),
+            matches!(&err, Error::FolderGone(m) if m.contains("UIDVALIDITY")),
             "{err:?}"
         );
         assert_eq!(server.connection_count(), 2, "no further retries");
@@ -643,6 +657,52 @@ mod tests {
             2,
             "only LOGIN + EXAMINE on the new connection: {on2:?}"
         );
+    }
+
+    #[test]
+    fn failed_reopen_after_reconnect_forgets_the_folder_and_never_reconnects_again() {
+        for changed_uidvalidity in [true, false] {
+            // conn 1: NOOP drops. conn 2: re-EXAMINE shows another UIDVALIDITY, or NO.
+            let server = Server::new(move |conn, cmd| {
+                if cmd.starts_with("LOGIN") {
+                    Reply::Text("{tag} OK\r\n".into())
+                } else if cmd.starts_with("EXAMINE") {
+                    if conn == 1 || changed_uidvalidity {
+                        let uv = if conn == 1 { 7 } else { 8 };
+                        Reply::Text(format!(
+                            "* OK [UIDVALIDITY {uv}] v\r\n{{tag}} OK [READ-ONLY] ok\r\n"
+                        ))
+                    } else {
+                        Reply::Text("{tag} NO [NONEXISTENT] gone\r\n".into())
+                    }
+                } else if cmd.starts_with("NOOP") && conn == 1 {
+                    Reply::Drop(String::new())
+                } else {
+                    Reply::Text("{tag} OK\r\n".into())
+                }
+            });
+            let (mut c, _) = conn_for(&server);
+            c.open().unwrap();
+            c.set_selected(Some(("INBOX".into(), 7)));
+            let err = c.run(|s| s.noop()).unwrap_err();
+            assert!(matches!(err, Error::FolderGone(_)), "{err:?}");
+            // later commands use the surviving session: no reconnect, no login, no re-EXAMINE
+            c.run(|s| s.noop()).unwrap();
+            c.run(|s| s.noop()).unwrap();
+            assert_eq!(server.connection_count(), 2);
+            let logins = server
+                .commands()
+                .iter()
+                .filter(|(_, x)| x.starts_with("LOGIN"))
+                .count();
+            assert_eq!(logins, 2);
+            let examines = server
+                .commands()
+                .iter()
+                .filter(|(_, x)| x.starts_with("EXAMINE"))
+                .count();
+            assert_eq!(examines, 1, "only the reconnect's re-EXAMINE");
+        }
     }
 
     #[test]

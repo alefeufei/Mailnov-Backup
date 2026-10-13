@@ -40,12 +40,13 @@ type Fetched = (Vec<RawMessage>, Vec<(u32, MessageFailure)>);
 
 /// Fetch `uids`; on a batch error retry one UID at a time to isolate bad messages.
 /// Returns the messages obtained and the UIDs that failed with their error. A systemic error
-/// (connection, login, disk) at any point is returned as `Err` at once: the run must stop, and
-/// retrying every remaining UID against a dead connection would only produce a failure storm.
+/// (connection, login, disk) or `FolderGone` at any point is returned as `Err` at once: the run
+/// (or the folder) must stop, and retrying every remaining UID would only produce a failure
+/// storm (and, against a real server, a reconnect + login per UID).
 fn fetch_isolating(source: &mut dyn MailSource, uids: &[u32]) -> Result<Fetched> {
     match source.fetch(uids) {
         Ok(msgs) => Ok((msgs, vec![])),
-        Err(e) if is_systemic(&e) => Err(e),
+        Err(e) if ends_folder_or_run(&e) => Err(e),
         // A single UID was already tried on its own.
         Err(e) if uids.len() == 1 => Ok((vec![], vec![(uids[0], MessageFailure::Fetch(e))])),
         Err(_) => {
@@ -54,7 +55,7 @@ fn fetch_isolating(source: &mut dyn MailSource, uids: &[u32]) -> Result<Fetched>
             for &uid in uids {
                 match source.fetch(&[uid]) {
                     Ok(mut m) => ok.append(&mut m),
-                    Err(e) if is_systemic(&e) => return Err(e),
+                    Err(e) if ends_folder_or_run(&e) => return Err(e),
                     Err(e) => failed.push((uid, MessageFailure::Fetch(e))),
                 }
             }
@@ -86,6 +87,12 @@ fn is_systemic(e: &Error) -> bool {
     )
 }
 
+/// Errors that must not be retried per message: systemic ones end the run, `FolderGone` ends the
+/// folder (`FolderFailed`, then the next folder).
+fn ends_folder_or_run(e: &Error) -> bool {
+    is_systemic(e) || matches!(e, Error::FolderGone(_))
+}
+
 /// `INBOX` is case-insensitive in IMAP (also as the first level of a hierarchy).
 fn normalize_folder(name: &str) -> String {
     match name.split_once('/') {
@@ -100,8 +107,10 @@ fn normalize_folder(name: &str) -> String {
 /// A folder that cannot be processed (not found on the server, `EXAMINE`/search refused, any
 /// other per-folder server error) emits `FolderFailed`, counts as one failure and the run goes
 /// on with the next folder. A message the source refuses to deliver is a `MessageFailed` (and
-/// pins `last_uid` below it), however many of them there are. Connection, login, disk and index
-/// errors (including one hit while fetching a single message) end the run at once with `Err`.
+/// pins `last_uid` below it), however many of them there are. A folder that vanishes or is
+/// renumbered mid-run (`Error::FolderGone`) is one `FolderFailed`, with no further commands in it.
+/// Connection, login, disk and index errors (including one hit while fetching a single message)
+/// end the run at once with `Err`.
 pub fn archive(
     source: &mut dyn MailSource,
     store: &mut dyn Store,

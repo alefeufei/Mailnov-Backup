@@ -57,6 +57,9 @@ pub struct FakeSource {
     pub fail_select: HashMap<String, Injected>,
     /// `uids_after` fails with the given kind of error while these folders are selected.
     pub fail_uids_after: HashMap<String, Injected>,
+    /// Every `fetch` while one of these folders is selected fails with `Error::FolderGone` (as
+    /// when a reconnect finds the folder deleted or its UIDVALIDITY changed).
+    pub gone_on_fetch: HashSet<String>,
     successful_fetches: usize,
     selected: Option<String>,
 }
@@ -131,6 +134,7 @@ impl FakeSource {
         self.expunge_on_fetch.clear();
         self.fail_select.clear();
         self.fail_uids_after.clear();
+        self.gone_on_fetch.clear();
     }
 
     fn current(&self) -> Result<&FakeFolder> {
@@ -219,6 +223,13 @@ impl MailSource for FakeSource {
     fn fetch(&mut self, uids: &[u32]) -> Result<Vec<RawMessage>> {
         self.fetch_calls += 1;
         self.fetched_uids.extend_from_slice(uids);
+        if let Some(name) = self
+            .selected
+            .as_ref()
+            .filter(|n| self.gone_on_fetch.contains(*n))
+        {
+            return Err(Error::FolderGone(format!("injected: {name} vanished")));
+        }
         if let Some(n) = self.fail_after_fetches {
             if self.successful_fetches >= n {
                 return Err(Error::Connection("injected: connection lost".into()));

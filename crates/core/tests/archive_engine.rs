@@ -1005,3 +1005,42 @@ fn connection_lost_while_isolating_a_batch_aborts_without_a_failure_storm() {
         .iter()
         .any(|e| matches!(e, Event::MessageFailed { uid, .. } if *uid > 2)));
 }
+
+// ---- follow-up 2: a folder that vanishes mid-run ends that folder only ----
+
+#[test]
+fn folder_gone_mid_run_ends_the_folder_without_per_uid_retries() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = three_folders();
+    for i in 3..=12 {
+        src.add_message("A", i, eml(i), &[]);
+    }
+    run(&mut src, &mut store, &opts(3)).0.unwrap();
+    for i in 13..=30 {
+        src.add_message("A", i, eml(i), &[]);
+    }
+    src.add_message("B", 3, eml(13), &[]);
+    src.gone_on_fetch.insert("A".into());
+    let before = src.fetch_calls;
+    let (r, events) = run(&mut src, &mut store, &opts(3));
+    let s = r.unwrap();
+    // one fetch in A (no isolation, no further batches), one in B
+    assert_eq!(src.fetch_calls - before, 2);
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, Event::MessageFailed { .. })));
+    let ff = folder_failures(&events);
+    assert_eq!(ff.len(), 1, "{ff:?}");
+    assert_eq!(ff[0].0, "A");
+    assert_eq!((s.added, s.failed), (1, 1));
+    assert_eq!(
+        store.folder_state(ACC, "A").unwrap(),
+        Some(StoredFolder {
+            uidvalidity: 7,
+            last_uid: 12
+        })
+    );
+    assert_eq!(last_uid(&store, "B"), 3);
+    assert_eq!(last_uid(&store, "INBOX"), 2);
+}

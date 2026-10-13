@@ -14,6 +14,10 @@ pub enum Error {
     Config(String),
     #[error("corrupt data: {0}")]
     Corrupt(String),
+    /// The folder being read cannot be used any more in this run (it vanished or its UIDVALIDITY
+    /// changed, typically noticed when re-opening it after a reconnect). Ends that folder only.
+    #[error("folder unavailable: {0}")]
+    FolderGone(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

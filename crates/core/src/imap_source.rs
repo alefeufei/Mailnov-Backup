@@ -690,6 +690,96 @@ mod source_tests {
         );
     }
 
+    /// LIST shows A and B; A has UIDs 1..=6 and B 1..=2. On connection 1 the first fetch in A
+    /// drops the link; on reconnect A is gone (`NO`) or renumbered (another UIDVALIDITY).
+    fn vanishing_folder_server(renumbered: bool) -> Arc<Server> {
+        let mut current = String::new();
+        Server::new(move |conn, cmd| {
+            if let Some(r) = base(cmd) {
+                return r;
+            }
+            if cmd.starts_with("LIST") {
+                return Reply::Text(
+                    "* LIST () \"/\" \"A\"\r\n* LIST () \"/\" \"B\"\r\n{tag} OK\r\n".into(),
+                );
+            }
+            if let Some(name) = cmd.strip_prefix("EXAMINE ") {
+                current = name.trim_matches('"').to_string();
+                let uv = match (current.as_str(), conn) {
+                    ("A", 1) => 7,
+                    ("A", _) if !renumbered => {
+                        return Reply::Text("{tag} NO [NONEXISTENT] no such mailbox\r\n".into())
+                    }
+                    ("A", _) => 8,
+                    _ => 5,
+                };
+                return Reply::Text(format!(
+                    "* OK [UIDVALIDITY {uv}] v\r\n{{tag}} OK [READ-ONLY] ok\r\n"
+                ));
+            }
+            if cmd.starts_with("UID SEARCH") {
+                let ids = if current == "A" { "1 2 3 4 5 6" } else { "1 2" };
+                return Reply::Text(format!("* SEARCH {ids}\r\n{{tag}} OK\r\n"));
+            }
+            if cmd.starts_with("UID FETCH") && cmd.contains("BODY.PEEK[]") {
+                if current == "A" {
+                    return Reply::Drop(String::new());
+                }
+                let mut t = fetch_line(1, "", "Subject: b1\r\n\r\none");
+                t.push_str(&fetch_line(2, "", "Subject: b2\r\n\r\ntwo"));
+                t.push_str("{tag} OK\r\n");
+                return Reply::Text(t);
+            }
+            Reply::Text("{tag} OK\r\n".into())
+        })
+    }
+
+    #[test]
+    fn folder_vanishing_after_a_reconnect_fails_once_without_a_login_storm() {
+        use crate::store::{FsSqliteStore, Store};
+        use crate::sync::{archive, ArchiveOptions};
+        use crate::Event;
+        for renumbered in [true, false] {
+            let server = vanishing_folder_server(renumbered);
+            let mut s = source(&server);
+            let dir = tempfile::tempdir().unwrap();
+            let mut store = FsSqliteStore::open(dir.path()).unwrap();
+            let opts = ArchiveOptions {
+                account: "me".into(),
+                folders: None,
+                since: None,
+                batch_size: 2,
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            let r = archive(&mut s, &mut store, &opts, &tx);
+            drop(tx);
+            let events: Vec<Event> = rx.try_iter().collect();
+            let sum = r.unwrap();
+            let cmds = server.commands();
+            assert_eq!(server.connection_count(), 2, "one reconnect: {cmds:?}");
+            assert_eq!(
+                cmds.iter().filter(|(_, c)| c.starts_with("LOGIN")).count(),
+                2
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, Event::MessageFailed { .. })),
+                "{events:?}"
+            );
+            let gone: Vec<&Event> = events
+                .iter()
+                .filter(|e| matches!(e, Event::FolderFailed { .. }))
+                .collect();
+            assert_eq!(gone.len(), 1, "{events:?}");
+            assert!(matches!(gone[0], Event::FolderFailed { folder, .. } if folder == "A"));
+            assert_eq!((sum.added, sum.failed), (2, 1));
+            assert_eq!(store.folder_state("me", "B").unwrap().unwrap().last_uid, 2);
+            // A was never committed: the next run starts it again (and reconciles if renumbered)
+            assert_eq!(store.folder_state("me", "A").unwrap(), None);
+        }
+    }
+
     #[test]
     fn select_still_requires_uidvalidity() {
         let server = Server::new(|_, cmd| {
