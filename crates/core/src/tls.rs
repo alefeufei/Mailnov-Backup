@@ -1,6 +1,7 @@
 /// How the connection to the server is secured. There is deliberately no plaintext variant and no
 /// way to disable certificate validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TlsMode {
     /// TLS from the first byte (usually port 993).
     Implicit,

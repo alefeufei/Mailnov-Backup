@@ -12,6 +12,10 @@ imap-proto = "0.16.7"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.10"
 thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+# OS-native credential store (Windows Credential Manager / macOS Keychain / Secret Service). Feature v1 selects the real native store per platform; there is no mock fallback.
+keyring = { version = "4.2", default-features = false, features = ["v1"] }
 chrono = { version = "0.4.37", default-features = false, features = ["std"] }
 # TLS backend: rustls (via imap rustls-tls, OS root store, certificate validation always on); imap 3.0 is alpha but is the only release with rustls/STARTTLS builder.
 imap = { version = "=3.0.0-alpha.15", default-features = false, features = ["rustls-tls"] }
