@@ -108,11 +108,11 @@ class PstExporter:
             progress.total_messages = total
 
         if total == 0:
-            progress.status = "success"
-            progress.add_log("Nenhuma mensagem selecionada para exportação.")
+            progress.status = "warning"
+            progress.add_log("Atenção: Nenhuma mensagem encontrada no arquivo local para exportação PST.")
             if on_progress:
                 on_progress(progress.to_dict())
-            return True
+            return False
 
         import pythoncom
         import win32com.client

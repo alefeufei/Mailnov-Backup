@@ -108,5 +108,43 @@ class TestExportEngine(unittest.TestCase):
         self.assertGreater(out_pst.stat().st_size, 1000)
 
 
+    def test_export_empty_fails_gracefully(self):
+        engine = ExportEngine(self.db)
+        req = ExportEmlRequest(profile_id="nonexistent_acc", output_dir=str(self.tmp_path / "out"))
+        ok = engine.export_to_eml_directory(req)
+        self.assertFalse(ok)
+
+    def test_format_internal_date(self):
+        from mailstore.export_engine import format_internal_date
+        # Raw IMAP INTERNALDATE
+        self.assertEqual(format_internal_date("24-Jun-2026 21:45:01 -0300"), '"24-Jun-2026 21:45:01 -0300"')
+        # ISO format
+        res_iso = format_internal_date("2026-06-24T21:44:58-03:00")
+        self.assertIsNotNone(res_iso)
+        self.assertTrue(res_iso.startswith('"') and res_iso.endswith('"'))
+        # None
+        self.assertIsNone(format_internal_date(None))
+
+    def test_resolve_target_folder(self):
+        from mailstore.export_engine import resolve_target_folder
+        existing = {"inbox": "INBOX", "sent": "Sent", "trash": "Trash"}
+
+        # 1. INBOX sem prefixo
+        self.assertEqual(resolve_target_folder("INBOX", "/", None, existing), "INBOX")
+
+        # 2. INBOX com prefixo
+        self.assertEqual(resolve_target_folder("INBOX", "/", "Restaurado", existing), "Restaurado/INBOX")
+
+        # 3. Subpasta com delimitador ponto na origem (INBOX.Sent) convertendo para / no destino
+        self.assertEqual(resolve_target_folder("INBOX.Sent", "/", None, existing), "Sent")
+
+        # 4. Subpasta com prefixo
+        self.assertEqual(resolve_target_folder("INBOX.Sent", "/", "Restaurado", existing), "Restaurado/Sent")
+
+        # 5. Subpasta arbitrária
+        self.assertEqual(resolve_target_folder("INBOX.Clientes.2026", "/", "Restaurado", existing), "Restaurado/Clientes/2026")
+
+
 if __name__ == "__main__":
     unittest.main()
+

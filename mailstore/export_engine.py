@@ -64,6 +64,127 @@ class ExportProgress:
         }
 
 
+def format_internal_date(date_str: Optional[str]) -> Optional[str]:
+    """Formata data para o padrão exigido pelo IMAP INTERNALDATE ('\"DD-Mmm-YYYY HH:MM:SS +HHMM\"')."""
+    if not date_str:
+        return None
+    s = date_str.strip('"').strip()
+    # Verifica se já está no formato de data interna do IMAP (ex: '24-Jun-2026 21:45:01 -0300')
+    if re.match(r"^\d{1,2}-[A-Za-z]{3}-\d{4}\s+\d{2}:\d{2}:\d{2}\s+[+-]\d{4}$", s):
+        return f'"{s}"'
+    try:
+        import imaplib
+        dt = datetime.fromisoformat(s)
+        return imaplib.Time2Internaldate(dt.timestamp())
+    except Exception:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        import imaplib
+        dt = parsedate_to_datetime(s)
+        return imaplib.Time2Internaldate(dt.timestamp())
+    except Exception:
+        pass
+    return None
+
+
+def resolve_target_folder(
+    source_folder: str,
+    target_delim: str,
+    target_prefix: Optional[str],
+    existing_dest_map: dict
+) -> str:
+    """Determina o nome correspondente da pasta no destino, adaptando delimitadores e prefixos."""
+    is_inbox = source_folder.upper() == "INBOX"
+
+    if target_prefix:
+        prefix_clean = target_prefix.strip("/. ")
+        if is_inbox:
+            return f"{prefix_clean}{target_delim}INBOX"
+
+        # Remove prefixo INBOX da origem caso exista
+        sub = source_folder
+        if sub.upper().startswith("INBOX."):
+            sub = sub[6:]
+        elif sub.upper().startswith("INBOX/"):
+            sub = sub[6:]
+
+        sub_conv = sub.replace("/", target_delim).replace(".", target_delim)
+        return f"{prefix_clean}{target_delim}{sub_conv}"
+
+    if is_inbox:
+        return "INBOX"
+
+    sub = source_folder
+    if sub.upper().startswith("INBOX."):
+        sub = sub[6:]
+    elif sub.upper().startswith("INBOX/"):
+        sub = sub[6:]
+
+    sub_conv = sub.replace("/", target_delim).replace(".", target_delim)
+    sub_lower = sub_conv.lower()
+
+    if sub_lower in existing_dest_map:
+        return existing_dest_map[sub_lower]
+
+    inbox_sub = f"inbox{target_delim}{sub_lower}"
+    if inbox_sub in existing_dest_map:
+        return existing_dest_map[inbox_sub]
+
+    has_inbox_prefix = any(k.startswith(f"inbox{target_delim}") for k in existing_dest_map.keys())
+    if has_inbox_prefix:
+        return f"INBOX{target_delim}{sub_conv}"
+
+    return sub_conv
+
+
+def ensure_imap_hierarchy(
+    client: ImapClient,
+    folder_path: str,
+    delim: str,
+    cache: set,
+    progress: Optional[ExportProgress] = None
+) -> bool:
+    """Cria recursivamente todos os níveis de pasta no servidor IMAP de destino."""
+    if not folder_path or folder_path.upper() == "INBOX":
+        return True
+
+    parts = [p.strip() for p in folder_path.split(delim) if p.strip()]
+    if not parts:
+        return True
+
+    current = ""
+    for part in parts:
+        current = f"{current}{delim}{part}" if current else part
+        current_lower = current.lower()
+        if current_lower in cache:
+            continue
+
+        encoded = encode_imap_utf7(current)
+        try:
+            folder_arg = f'"{encoded}"' if " " in encoded else encoded
+            typ, resp = client.conn.create(folder_arg)
+            resp_str = str(resp).upper()
+            if typ == "OK":
+                cache.add(current_lower)
+                if progress:
+                    progress.add_log(f"Pasta criada no destino: {current}")
+            elif "ALREADYEXISTS" in resp_str or "EXISTS" in resp_str:
+                cache.add(current_lower)
+            else:
+                alt_arg = encoded if folder_arg.startswith('"') else f'"{encoded}"'
+                typ2, resp2 = client.conn.create(alt_arg)
+                if typ2 == "OK" or "ALREADYEXISTS" in str(resp2).upper():
+                    cache.add(current_lower)
+                    if progress and typ2 == "OK":
+                        progress.add_log(f"Pasta criada no destino: {current}")
+                else:
+                    cache.add(current_lower)
+        except Exception as e:
+            cache.add(current_lower)
+    return True
+
+
 class ExportEngine:
     def __init__(self, db: Database):
         self.db = db
@@ -113,11 +234,15 @@ class ExportEngine:
             progress.total_messages = total
 
         if total == 0:
-            progress.status = "success"
-            progress.add_log("Nenhuma mensagem selecionada para exportação.")
+            progress.status = "warning"
+            filt_conta = req.profile_id or "Todas as contas"
+            filt_pasta = req.folder or "Todas as pastas"
+            progress.add_log(f"Atenção: Nenhuma mensagem encontrada no arquivo local para exportação.")
+            progress.add_log(f"Filtro aplicado: Conta '{filt_conta}', Pasta '{filt_pasta}'.")
+            progress.add_log("Dica: Verifique se realizou o backup de e-mails antes de tentar exportar.")
             if on_progress:
                 on_progress(progress.to_dict())
-            return True
+            return False
 
         client = ImapClient(target_cfg)
         try:
@@ -125,11 +250,22 @@ class ExportEngine:
             client.connect()
             progress.add_log("Autenticação com o servidor de destino bem-sucedida.")
 
-            # Descobre pastas existentes no destino
+            # Descobre pastas existentes e delimitador no destino
             dest_folders_list = client.list_folders()
             existing_dest_folders = {f["name"].lower(): f["raw_name"] for f in dest_folders_list}
 
-            created_folders_cache = set()
+            target_delim = "/"
+            for f in dest_folders_list:
+                d = f.get("delim")
+                if d and d not in ('NIL', '""'):
+                    target_delim = d
+                    break
+
+            progress.add_log(f"Delimitador detectado no servidor destino: '{target_delim}'. Pastas no destino: {len(dest_folders_list)}.")
+            progress.add_log(f"Iniciando transferência de {total} mensagem(ns)...")
+
+            created_folders_cache = {f["name"].lower() for f in dest_folders_list}
+            created_folders_cache.add("inbox")
 
             for idx, msg in enumerate(messages, 1):
                 if progress.is_cancelled:
@@ -142,29 +278,21 @@ class ExportEngine:
                 progress.current_folder = msg["folder"]
                 progress.current_subject = msg["subject"] or "(Sem assunto)"
 
-                # Determina nome da pasta no destino
-                folder_dest = msg["folder"]
-                if req.target_folder_prefix:
-                    prefix = req.target_folder_prefix.strip("/")
-                    folder_dest = f"{prefix}/{folder_dest}" if folder_dest.lower() != "inbox" else f"{prefix}/INBOX"
+                # Determina pasta de destino com tradução de hierarquia
+                folder_dest = resolve_target_folder(
+                    msg["folder"],
+                    target_delim,
+                    req.target_folder_prefix,
+                    existing_dest_folders
+                )
 
-                # Cria pasta no destino se necessário
-                if folder_dest.lower() not in existing_dest_folders and folder_dest not in created_folders_cache:
-                    try:
-                        encoded_target = encode_imap_utf7(folder_dest)
-                        typ, create_resp = client.conn.create(f'"{encoded_target}"')
-                        if typ == "OK":
-                            existing_dest_folders[folder_dest.lower()] = encoded_target
-                            created_folders_cache.add(folder_dest)
-                            progress.add_log(f"Pasta criada no destino: {folder_dest}")
-                    except Exception as cr_err:
-                        # Pasta pode já existir ou servidor retornar aviso
-                        created_folders_cache.add(folder_dest)
+                # Garante que toda a árvore de pastas pai/filho exista
+                ensure_imap_hierarchy(client, folder_dest, target_delim, created_folders_cache, progress)
 
                 # Carrega bytes do arquivo .eml
                 eml_abs = STORAGE_DIR / msg["eml_relative_path"]
                 if not eml_abs.exists():
-                    progress.add_log(f"Arquivo EML ausente: {msg['eml_relative_path']}")
+                    progress.add_log(f"Arquivo EML ausente no disco: {msg['eml_relative_path']}")
                     progress.error_count += 1
                     continue
 
@@ -173,53 +301,85 @@ class ExportEngine:
                 # Prepara Flags
                 flags_to_send = None
                 if req.preserve_flags and msg["flags"]:
-                    # Converte formato (\\Seen \\Flagged) em tupla
                     fl_list = [f for f in msg["flags"].split() if f.startswith("\\")]
                     if fl_list:
-                        flags_to_send = " ".join(fl_list)
+                        flags_to_send = f"({' '.join(fl_list)})"
 
                 # Prepara InternalDate
                 internal_date_val = None
                 if req.preserve_internal_date:
-                    date_ref = msg["date_received"] or msg["date_sent"]
-                    if date_ref:
-                        try:
-                            dt = datetime.fromisoformat(date_ref)
-                            import imaplib
-                            internal_date_val = imaplib.Time2Internaldate(dt.timestamp())
-                        except Exception:
-                            pass
+                    internal_date_val = format_internal_date(msg["date_received"] or msg["date_sent"])
+
+                # Argumento de pasta para APPEND
+                if folder_dest.upper() == "INBOX":
+                    folder_arg = "INBOX"
+                else:
+                    enc_f = encode_imap_utf7(folder_dest)
+                    folder_arg = f'"{enc_f}"' if " " in enc_f or not enc_f.isalnum() else enc_f
 
                 # APPEND no servidor
                 try:
-                    folder_to_append = existing_dest_folders.get(folder_dest.lower()) or encode_imap_utf7(folder_dest)
-                    # Formato seguro de aspas para pasta no APPEND
-                    folder_arg = f'"{folder_to_append}"' if not folder_to_append.startswith('"') else folder_to_append
-
                     typ, resp = client.conn.append(
                         folder_arg,
                         flags_to_send,
                         internal_date_val,
                         raw_bytes
                     )
+
+                    # Se falhar com TRYCREATE, força criação recursiva e retenta
+                    if typ != "OK":
+                        resp_text = str(resp).upper()
+                        if "TRYCREATE" in resp_text or "DOES NOT EXIST" in resp_text or "NONEXISTENT" in resp_text:
+                            ensure_imap_hierarchy(client, folder_dest, target_delim, created_folders_cache, progress)
+                            typ, resp = client.conn.append(
+                                folder_arg,
+                                flags_to_send,
+                                internal_date_val,
+                                raw_bytes
+                            )
+
+                    # Se ainda recusado e for subpasta, tenta salvar na INBOX como fallback
+                    if typ != "OK" and folder_dest.upper() != "INBOX":
+                        progress.add_log(f"Pasta '{folder_dest}' não aceitou mensagem #{msg['id']} ({resp}). Tentando gravar na INBOX principal...")
+                        typ_inbox, resp_inbox = client.conn.append(
+                            "INBOX",
+                            flags_to_send,
+                            internal_date_val,
+                            raw_bytes
+                        )
+                        if typ_inbox == "OK":
+                            typ = "OK"
+                            progress.add_log(f"Mensagem #{msg['id']} salva na INBOX de destino após recusa da subpasta.")
+
                     if typ == "OK":
                         progress.success_count += 1
                     else:
-                        progress.add_log(f"Erro APPEND na mensagem {msg['id']}: {resp}")
+                        progress.add_log(f"Erro ao enviar mensagem #{msg['id']} ('{msg['subject'][:30]}') para '{folder_dest}': {resp}")
                         progress.error_count += 1
 
                 except Exception as app_err:
-                    progress.add_log(f"Falha ao enviar mensagem {msg['id']}: {app_err}")
+                    progress.add_log(f"Falha ao enviar mensagem #{msg['id']}: {app_err}")
                     progress.error_count += 1
 
                 if idx % 10 == 0 or idx == total:
                     if on_progress:
                         on_progress(progress.to_dict())
 
-            progress.status = "success" if progress.error_count == 0 else "partial"
-            progress.add_log(
-                f"Migração IMAP finalizada. Enviadas com sucesso: {progress.success_count}, Falhas: {progress.error_count}."
-            )
+            if progress.success_count == 0 and progress.error_count > 0:
+                progress.status = "error"
+                progress.add_log(
+                    f"Exportação IMAP falhou integralmente: 0/{total} mensagens transferidas. {progress.error_count} erros registrados."
+                )
+            elif progress.error_count > 0:
+                progress.status = "partial"
+                progress.add_log(
+                    f"Exportação IMAP concluída com avisos: {progress.success_count} mensagens enviadas, {progress.error_count} falhas."
+                )
+            else:
+                progress.status = "success"
+                progress.add_log(
+                    f"Exportação IMAP finalizada com sucesso! Total de {progress.success_count} mensagem(ns) transferidas para a conta de destino."
+                )
 
         except Exception as conn_err:
             progress.status = "error"
@@ -265,6 +425,13 @@ class ExportEngine:
         else:
             progress.total_messages = total
 
+        if total == 0:
+            progress.status = "warning"
+            progress.add_log("Atenção: Nenhuma mensagem encontrada no arquivo local para exportação.")
+            if on_progress:
+                on_progress(progress.to_dict())
+            return False
+
         for idx, msg in enumerate(messages, 1):
             if progress.is_cancelled:
                 progress.status = "cancelled"
@@ -307,7 +474,7 @@ class ExportEngine:
         progress.add_log(f"Exportação EML concluída em {out_root}: {progress.success_count} arquivos gerados.")
         if on_progress:
             on_progress(progress.to_dict())
-        return True
+        return progress.status == "success"
 
     def export_to_mbox(
         self,
@@ -345,6 +512,13 @@ class ExportEngine:
             progress = ExportProgress("export_mbox", total, str(out_file))
         else:
             progress.total_messages = total
+
+        if total == 0:
+            progress.status = "warning"
+            progress.add_log("Atenção: Nenhuma mensagem encontrada no arquivo local para exportação.")
+            if on_progress:
+                on_progress(progress.to_dict())
+            return False
 
         box = mailbox.mbox(str(out_file))
         box.lock()
@@ -385,4 +559,5 @@ class ExportEngine:
         progress.add_log(f"Exportação MBOX concluída em {out_file}: {progress.success_count} mensagens.")
         if on_progress:
             on_progress(progress.to_dict())
-        return True
+        return progress.status == "success"
+

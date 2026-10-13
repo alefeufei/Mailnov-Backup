@@ -397,7 +397,20 @@ function openProgressModal(title, jobType, targetId) {
         currentPollingJob = null;
         document.getElementById("btn-cancel-job").style.display = "none";
         document.getElementById("btn-close-progress").style.display = "inline-flex";
-        document.getElementById("progress-status-desc").textContent = `Operação concluída (${data.status}).`;
+
+        const statusDescElem = document.getElementById("progress-status-desc");
+        if (data.status === "success") {
+          const count = data.success_count !== undefined ? data.success_count : (data.total_messages || data.total_msgs || 0);
+          statusDescElem.innerHTML = `<span style="color: var(--success); font-weight: 600;">✅ Concluído com sucesso! (${count} e-mails transferidos)</span>`;
+        } else if (data.status === "partial") {
+          statusDescElem.innerHTML = `<span style="color: #d97706; font-weight: 600;">⚠️ Concluído com avisos: ${data.success_count || 0} enviados, ${data.error_count || 0} falhas.</span>`;
+        } else if (data.status === "warning") {
+          statusDescElem.innerHTML = `<span style="color: #d97706; font-weight: 600;">⚠️ Atenção: Nenhuma mensagem encontrada com os filtros selecionados.</span>`;
+        } else if (data.status === "cancelled") {
+          statusDescElem.innerHTML = `<span style="color: var(--text-muted); font-weight: 600;">⏹️ Operação cancelada pelo usuário.</span>`;
+        } else {
+          statusDescElem.innerHTML = `<span style="color: var(--danger); font-weight: 600;">❌ Falha na operação (${data.error_count || 0} erros). Nenhuma mensagem foi transferida.</span>`;
+        }
 
         loadDashboardData();
         loadProfiles();

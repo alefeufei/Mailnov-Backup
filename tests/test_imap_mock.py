@@ -263,6 +263,65 @@ class TestImapMockIntegration(unittest.TestCase):
         self.assertEqual(len(self.server.appended_messages), 1)
         self.assertIn(b"Migracao Ok", self.server.appended_messages[0])
 
+    def test_export_to_imap_zero_messages_returns_false(self):
+        req = ExportImapRequest(
+            profile_id="nonexistent_acc",
+            target_host="127.0.0.1",
+            target_port=self.server.port,
+            target_ssl_mode="PLAIN",
+            target_username="user@mock.com",
+            target_password="mockpassword"
+        )
+        engine = ExportEngine(self.db)
+        ok = engine.export_to_imap(req)
+        self.assertFalse(ok)
+
+    def test_export_to_imap_subfolder_dot_translation(self):
+        # Insere mensagem em subpasta INBOX.Sent
+        eml_dir = self.storage_dir / "acc_exp2" / "INBOX.Sent"
+        eml_dir.mkdir(parents=True, exist_ok=True)
+        test_file = eml_dir / "101_sent.eml"
+        test_file.write_bytes(b"From: migracao@teste.com\r\nSubject: Enviado Ok\r\n\r\nEmail enviado.")
+
+        self.db.upsert_folder("acc_exp2", "INBOX.Sent")
+        self.db.insert_message(
+            account_id="acc_exp2",
+            folder="INBOX.Sent",
+            uid=101,
+            message_id="msg-sent-101",
+            subject="Enviado Ok",
+            sender="migracao@teste.com",
+            recipients="alvo@teste.com",
+            cc="",
+            bcc="",
+            reply_to="",
+            date_sent="2026-10-13T12:00:00",
+            date_received="24-Jun-2026 21:45:01 -0300",
+            size_bytes=test_file.stat().st_size,
+            flags="\\Seen \\Answered",
+            has_attachments=False,
+            body_preview="Email enviado.",
+            body_text_full="Email enviado.",
+            sha256="hash101",
+            eml_relative_path="acc_exp2/INBOX.Sent/101_sent.eml",
+            attachments=[]
+        )
+
+        req = ExportImapRequest(
+            profile_id="acc_exp2",
+            target_host="127.0.0.1",
+            target_port=self.server.port,
+            target_ssl_mode="PLAIN",
+            target_username="user@mock.com",
+            target_password="mockpassword",
+            target_folder_prefix=""
+        )
+
+        engine = ExportEngine(self.db)
+        ok = engine.export_to_imap(req)
+        self.assertTrue(ok)
+        self.assertGreaterEqual(len(self.server.appended_messages), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
