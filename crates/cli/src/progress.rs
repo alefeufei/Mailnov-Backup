@@ -1,16 +1,9 @@
 //! Consumes engine `Event`s on a separate thread: an `indicatif` bar on a TTY, plain lines otherwise.
 use indicatif::{ProgressBar, ProgressStyle};
+pub use mailbackup_core::service::Failure;
 use mailbackup_core::Event;
 use std::io::IsTerminal;
 use std::sync::mpsc::{channel, Sender};
-
-/// A message (`uid` is `Some`) or a whole folder (`uid` is `None`) the engine could not process.
-#[derive(Debug, Clone)]
-pub struct Failure {
-    pub folder: String,
-    pub uid: Option<u32>,
-    pub reason: String,
-}
 
 /// Runs `work` on the calling thread with an event sender while a second thread renders progress.
 /// The consumer is joined before this returns; the failures it saw are returned with the result.

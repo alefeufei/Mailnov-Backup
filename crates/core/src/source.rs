@@ -14,3 +14,25 @@ pub trait MailSource {
     fn fetch(&mut self, uids: &[u32]) -> Result<Vec<RawMessage>>;
     fn flags(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<String>)>>;
 }
+
+/// Forwarding impl so decorators can wrap a borrowed source (`&mut dyn MailSource`).
+impl<S: MailSource + ?Sized> MailSource for &mut S {
+    fn list_folders(&mut self) -> Result<Vec<String>> {
+        (**self).list_folders()
+    }
+    fn select(&mut self, folder: &str) -> Result<FolderState> {
+        (**self).select(folder)
+    }
+    fn uids_after(&mut self, last_uid: u32, since: Option<i64>) -> Result<Vec<u32>> {
+        (**self).uids_after(last_uid, since)
+    }
+    fn message_ids(&mut self, uids: &[u32]) -> Result<Vec<(u32, Option<String>)>> {
+        (**self).message_ids(uids)
+    }
+    fn fetch(&mut self, uids: &[u32]) -> Result<Vec<RawMessage>> {
+        (**self).fetch(uids)
+    }
+    fn flags(&mut self, uids: &[u32]) -> Result<Vec<(u32, Vec<String>)>> {
+        (**self).flags(uids)
+    }
+}

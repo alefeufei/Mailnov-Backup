@@ -20,3 +20,22 @@ pub trait MailTarget {
         internal_date: Option<i64>,
     ) -> Result<()>;
 }
+
+/// Forwarding impl so decorators can wrap a boxed target (`Box<dyn MailTarget>`).
+impl<T: MailTarget + ?Sized> MailTarget for Box<T> {
+    fn id(&self) -> String {
+        (**self).id()
+    }
+    fn ensure_folder(&mut self, folder: &str) -> Result<()> {
+        (**self).ensure_folder(folder)
+    }
+    fn put(
+        &mut self,
+        folder: &str,
+        bytes: &[u8],
+        flags: &[String],
+        internal_date: Option<i64>,
+    ) -> Result<()> {
+        (**self).put(folder, bytes, flags, internal_date)
+    }
+}
