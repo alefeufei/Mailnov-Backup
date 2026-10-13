@@ -27,3 +27,7 @@ test-secrets = []
 [[test]]
 name = "cli"
 required-features = ["test-secrets"]
+
+[[test]]
+name = "e2e_dovecot"
+required-features = ["test-secrets"]

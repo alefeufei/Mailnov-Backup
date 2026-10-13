@@ -1,12 +1,13 @@
-# Skeleton for the ImapSource integration test (UNTESTED: written without Docker available; Task 8 finishes it).
+# TEST ONLY Dovecot for mailbackup's ignored integration/e2e tests. See README.md.
+# Needs ./certs from `sh make-certs.sh` (CA trusted by the OS). Not run on the dev machine that
+# wrote it (no Docker there): treat it as untested until you have run it once.
+# State is ephemeral on purpose: `docker compose down` gives the e2e a fresh, empty mailbox.
 services:
   dovecot:
-    image: dovecot/dovecot:latest
+    image: dovecot/dovecot:2.3.21.1
     ports:
       - "993:993"
     volumes:
-      # Provide: conf.d/ overrides (imaps on 993, passwd-file user testuser/testpass,
-      # ssl_cert/ssl_key for CN=localhost) and the seed messages loaded into the INBOX.
-      - ./conf:/etc/dovecot/conf.d:ro
+      - ./conf/dovecot.conf:/etc/dovecot/dovecot.conf:ro
+      - ./users:/etc/dovecot/users:ro
       - ./certs:/certs:ro
-      - ./seed:/seed:ro

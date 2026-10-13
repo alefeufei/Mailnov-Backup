@@ -32,7 +32,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Export { profile, to } => {
             let p = profiles.load(&profile)?;
             check_target(&p, secrets.as_ref(), Some(to))?;
-            let mut store = open_existing(&p)?;
+            let mut store = open_existing(&p, true)?;
             let (summary, failures) = run_export(&p, secrets.as_ref(), &mut store, Some(to))?;
             Ok(finish(None, &summary, &failures))
         }
@@ -50,7 +50,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         }
         Command::Verify { profile } => {
             let p = profiles.load(&profile)?;
-            let store = open_existing(&p)?;
+            let store = open_existing(&p, true)?;
             let r = store.verify()?;
             println!("checked: {}", r.checked);
             println!("missing: {}", r.missing.len());
@@ -69,14 +69,14 @@ pub fn run(cli: Cli) -> Result<i32> {
         }
         Command::Reindex { profile } => {
             let p = profiles.load(&profile)?;
-            let mut store = open_existing(&p)?;
+            let mut store = open_existing(&p, false)?;
             let n = store.reindex()?;
             println!("indexed {n} messages");
             Ok(EXIT_OK)
         }
         Command::Status { profile } => {
             let p = profiles.load(&profile)?;
-            let store = open_existing(&p)?;
+            let store = open_existing(&p, true)?;
             let mut per: BTreeMap<String, HashSet<String>> = BTreeMap::new();
             let mut unique: HashSet<String> = HashSet::new();
             for m in store.messages(&p.name)? {
@@ -108,11 +108,20 @@ fn remove_profile(name: &str, profiles: &ProfileStore, secrets: &dyn SecretStore
 
 /// Opens an archive that must already exist (only `archive`/`migrate` may create one).
 /// `archive.toml` is written when the store is created and survives deleting `index.db`.
-fn open_existing(p: &Profile) -> Result<FsSqliteStore> {
+/// With `need_index`, a missing `index.db` is an error (opening would silently create an empty
+/// index and make the archive look empty); only `reindex` passes `false`.
+fn open_existing(p: &Profile, need_index: bool) -> Result<FsSqliteStore> {
     if !p.archive_dir.join("archive.toml").is_file() {
         return Err(Error::Config(format!(
             "no archive found at '{}'; run `archive {}` first or check the profile's archive_dir",
             p.archive_dir.display(),
+            p.name
+        )));
+    }
+    if need_index && !p.archive_dir.join("index.db").is_file() {
+        return Err(Error::Config(format!(
+            "the index '{}' is missing; run `mailbackup reindex {}` to rebuild it from the .eml files",
+            p.archive_dir.join("index.db").display(),
             p.name
         )));
     }

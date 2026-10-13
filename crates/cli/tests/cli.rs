@@ -456,3 +456,34 @@ fn reindex_works_when_only_index_db_deleted() {
     assert!(e.archive.join("archive.toml").is_file());
     cmd(&e).args(["reindex", "w"]).assert().success();
 }
+
+fn delete_only_index_db(e: &Env) {
+    for f in ["index.db", "index.db-wal", "index.db-shm"] {
+        let _ = std::fs::remove_file(e.archive.join(f));
+    }
+    assert!(e.archive.join("archive.toml").is_file());
+}
+
+#[test]
+fn verify_and_status_refuse_when_only_index_db_deleted() {
+    for c in ["verify", "status"] {
+        let e = env();
+        add(&e, "w", &[]).success();
+        populate(&e, "w");
+        delete_only_index_db(&e);
+        let a = cmd(&e).args([c, "w"]).assert().failure().code(1);
+        assert!(err(&a).contains("reindex w"), "{c}: {}", err(&a));
+        assert!(
+            !out(&a).contains("total:") && !out(&a).contains("checked:"),
+            "{c} must not report an empty archive: {}",
+            out(&a)
+        );
+        assert!(
+            !e.archive.join("index.db").exists(),
+            "{c} must not recreate index.db"
+        );
+        // reindex still recovers, after which the command works.
+        cmd(&e).args(["reindex", "w"]).assert().success();
+        cmd(&e).args([c, "w"]).assert().success();
+    }
+}
