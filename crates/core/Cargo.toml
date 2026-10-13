@@ -14,3 +14,8 @@ thiserror = "1"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+proptest = "1"
+
+[[test]]
+name = "archive_engine"
+required-features = ["testing"]
