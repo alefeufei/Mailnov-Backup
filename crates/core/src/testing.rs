@@ -27,6 +27,10 @@ pub struct FakeSource {
     pub fetch_calls: usize,
     /// Every UID requested through `fetch`, in order.
     pub fetched_uids: Vec<u32>,
+    /// UIDs silently omitted from `fetch` results while still listed (truncated response).
+    pub drop_from_fetch: HashSet<u32>,
+    /// UIDs expunged from the folder the moment they are fetched (gone between listing and fetch).
+    pub expunge_on_fetch: HashSet<u32>,
     successful_fetches: usize,
     selected: Option<String>,
 }
@@ -89,6 +93,8 @@ impl FakeSource {
     pub fn clear_failures(&mut self) {
         self.fail_uids.clear();
         self.fail_after_fetches = None;
+        self.drop_from_fetch.clear();
+        self.expunge_on_fetch.clear();
     }
 
     fn current(&self) -> Result<&FakeFolder> {
@@ -165,9 +171,16 @@ impl MailSource for FakeSource {
         if let Some(u) = uids.iter().find(|u| self.fail_uids.contains(u)) {
             return Err(Error::Imap(format!("injected: bad message uid {u}")));
         }
+        if let Some(name) = self.selected.clone() {
+            if let Some(f) = self.folders.get_mut(&name) {
+                let gone = &self.expunge_on_fetch;
+                f.messages.retain(|m| !(gone.contains(&m.uid) && uids.contains(&m.uid)));
+            }
+        }
         let f = self.current()?;
         let out = uids
             .iter()
+            .filter(|u| !self.drop_from_fetch.contains(u))
             .filter_map(|u| f.messages.iter().find(|m| m.uid == *u))
             .map(|m| RawMessage {
                 uid: m.uid,

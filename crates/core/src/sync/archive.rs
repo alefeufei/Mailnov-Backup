@@ -1,6 +1,6 @@
 use crate::store::Store;
 use crate::{Error, Event, MailSource, RawMessage, Result, RunSummary};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::mpsc::Sender;
 
 pub struct ArchiveOptions {
@@ -93,17 +93,26 @@ fn archive_folder(
     let mut last_uid = base_last;
     // Lowest UID that failed in this run: last_uid may never reach it.
     let mut lowest_failed: Option<u32> = None;
+    // While reconciling, the stored UIDVALIDITY stays the old one until the folder is fully
+    // processed without failures, so an interrupted run reconciles again.
+    let commit_validity = if reconcile {
+        stored.as_ref().map_or(state.uidvalidity, |s| s.uidvalidity)
+    } else {
+        state.uidvalidity
+    };
+    let mut folder_failed = false;
 
     for chunk in uids.chunks(batch_size) {
         let chunk_max = *chunk.iter().max().expect("chunks are non-empty");
 
         let wanted: Vec<u32> = if reconcile {
-            let ids = source.message_ids(chunk)?;
+            let answers: HashMap<u32, Option<String>> = source.message_ids(chunk)?.into_iter().collect();
             let mut keep = vec![];
-            for (uid, mid) in ids {
-                let known_msg = match mid {
-                    Some(id) => store.has_message_id(account, &id)?,
-                    None => false,
+            for &uid in chunk {
+                // No answer, or no Message-ID: unknown, so download it.
+                let known_msg = match answers.get(&uid) {
+                    Some(Some(id)) => store.has_message_id(account, id)?,
+                    _ => false,
                 };
                 if !known_msg {
                     keep.push(uid);
@@ -114,11 +123,28 @@ fn archive_folder(
             chunk.to_vec()
         };
 
-        let (messages, failed) =
+        let (messages, mut failed) =
             if wanted.is_empty() { (vec![], vec![]) } else { fetch_isolating(source, &wanted) };
+
+        // A UID absent from the response is expunged only if the source confirms it is gone.
+        let got: HashSet<u32> = messages.iter().map(|m| m.uid).collect();
+        let already_failed: HashSet<u32> = failed.iter().map(|(u, _)| *u).collect();
+        let missing: Vec<u32> =
+            wanted.iter().copied().filter(|u| !got.contains(u) && !already_failed.contains(u)).collect();
+        if let Some(&min_missing) = missing.iter().min() {
+            let listed: HashSet<u32> =
+                source.uids_after(min_missing - 1, opts.since)?.into_iter().collect();
+            for uid in missing {
+                if listed.contains(&uid) {
+                    failed.push((uid, "missing from fetch response".to_string()));
+                }
+            }
+            failed.sort_by_key(|(u, _)| *u);
+        }
 
         for (uid, reason) in &failed {
             summary.failed += 1;
+            folder_failed = true;
             lowest_failed = Some(lowest_failed.map_or(*uid, |l| l.min(*uid)));
             emit(
                 events,
@@ -137,13 +163,18 @@ fn archive_folder(
         }
         let new_last = last_uid.max(ceiling);
 
-        let outcome = store.commit_batch(account, folder, state.uidvalidity, &messages, new_last)?;
+        let outcome = store.commit_batch(account, folder, commit_validity, &messages, new_last)?;
         last_uid = new_last;
         summary.added += outcome.added;
         summary.duplicates += outcome.duplicates;
         for m in &messages {
             emit(events, Event::MessageArchived { folder: folder.to_string(), uid: m.uid });
         }
+    }
+
+    if reconcile && !folder_failed {
+        // Whole folder reconciled: now persist the new UIDVALIDITY.
+        store.commit_batch(account, folder, state.uidvalidity, &[], last_uid)?;
     }
 
     refresh_flags(source, store, account, folder, &known, batch_size)

@@ -343,3 +343,150 @@ proptest! {
         prop_assert_eq!(last_uid(&store, "INBOX"), 35);
     }
 }
+
+#[test]
+fn partial_fetch_of_a_still_listed_uid_is_a_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = inbox(10);
+    src.drop_from_fetch.insert(5);
+    let (r, events) = run(&mut src, &mut store, &opts(50));
+    let s = r.unwrap();
+    assert_eq!((s.added, s.failed), (9, 1));
+    assert!(events.iter().any(|e| matches!(e, Event::MessageFailed { uid: 5, reason, .. } if reason == "missing from fetch response")));
+    assert_eq!(last_uid(&store, "INBOX"), 4);
+    src.clear_failures();
+    let s = run(&mut src, &mut store, &opts(50)).0.unwrap();
+    assert_eq!((s.added, s.failed), (1, 0));
+    assert_eq!(last_uid(&store, "INBOX"), 10);
+    assert_eq!(store.messages(ACC).unwrap().len(), 10);
+}
+
+#[test]
+fn uid_really_gone_at_source_is_not_a_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = inbox(10);
+    src.expunge_on_fetch.insert(5);
+    let s = run(&mut src, &mut store, &opts(50)).0.unwrap();
+    assert_eq!((s.added, s.failed), (9, 0));
+    assert_eq!(last_uid(&store, "INBOX"), 10);
+}
+
+#[test]
+fn reconcile_with_overlapping_renumbering_never_misapplies_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = inbox(3);
+    run(&mut src, &mut store, &opts(50)).0.unwrap();
+    // renumber so new UIDs overlap the old range: m3->1, m1->2, m2->3, new m4->4
+    src.folders.get_mut("INBOX").unwrap().messages.clear();
+    src.folders.get_mut("INBOX").unwrap().uidvalidity = 99;
+    src.add_message("INBOX", 1, eml(3), &["\\Seen"]);
+    src.add_message("INBOX", 2, eml(1), &[]);
+    src.add_message("INBOX", 3, eml(2), &[]);
+    src.add_message("INBOX", 4, eml(4), &[]);
+    src.fetched_uids.clear();
+    let s = run(&mut src, &mut store, &opts(50)).0.unwrap();
+    assert_eq!(s.added, 1);
+    assert_eq!(src.fetched_uids, vec![4]);
+    src.set_flags("INBOX", 1, &["\\Seen", "\\Flagged"]);
+    run(&mut src, &mut store, &opts(50)).0.unwrap();
+    let sha = |n: u32| mailbackup_core::sha256_hex(&eml(n));
+    for m in store.messages(ACC).unwrap() {
+        if m.sha256 == sha(1) || m.sha256 == sha(2) {
+            assert!(m.flags.is_empty(), "flags leaked onto the wrong message: {m:?}");
+        }
+        if let Some(u) = m.uid {
+            // any location that still has a uid must match the source's message at that uid
+            let expected = src.folders["INBOX"].messages.iter().find(|x| x.uid == u).unwrap();
+            assert_eq!(m.sha256, mailbackup_core::sha256_hex(&expected.bytes));
+        }
+    }
+}
+
+#[test]
+fn interrupted_reconcile_keeps_old_uidvalidity_and_reconciles_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = inbox(4);
+    run(&mut src, &mut store, &opts(5)).0.unwrap();
+    src.renumber("INBOX", 99, 100);
+    for u in 105..=110 {
+        src.add_message("INBOX", u, eml(u), &[]);
+    }
+    src.fetched_uids.clear();
+    src.fail_after_fetches = Some(src.fetch_calls + 1);
+    let (r, _) = run(&mut src, &mut store, &opts(5));
+    assert!(matches!(r, Err(Error::Imap(_))));
+    assert_eq!(store.folder_state(ACC, "INBOX").unwrap().unwrap().uidvalidity, 7);
+    src.clear_failures();
+    src.fetched_uids.clear();
+    let s = run(&mut src, &mut store, &opts(5)).0.unwrap();
+    assert_eq!(src.fetched_uids, vec![106, 107, 108, 109, 110]);
+    assert_eq!(s.added, 5);
+    assert_eq!(
+        store.folder_state(ACC, "INBOX").unwrap(),
+        Some(StoredFolder { uidvalidity: 99, last_uid: 110 })
+    );
+    let shas: std::collections::BTreeSet<_> =
+        store.messages(ACC).unwrap().iter().map(|m| m.sha256.clone()).collect();
+    assert_eq!(shas.len(), 10);
+}
+
+#[test]
+fn reconcile_with_failed_message_keeps_old_uidvalidity() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = inbox(3);
+    run(&mut src, &mut store, &opts(50)).0.unwrap();
+    src.renumber("INBOX", 99, 100);
+    src.add_message("INBOX", 110, eml(110), &[]);
+    src.add_message("INBOX", 111, eml(111), &[]);
+    src.fail_uids.insert(110);
+    let s = run(&mut src, &mut store, &opts(50)).0.unwrap();
+    assert_eq!(s.failed, 1);
+    assert_eq!(store.folder_state(ACC, "INBOX").unwrap().unwrap().uidvalidity, 7);
+    src.clear_failures();
+    src.fetched_uids.clear();
+    run(&mut src, &mut store, &opts(50)).0.unwrap();
+    assert_eq!(src.fetched_uids, vec![110]);
+    assert_eq!(
+        store.folder_state(ACC, "INBOX").unwrap(),
+        Some(StoredFolder { uidvalidity: 99, last_uid: 111 })
+    );
+}
+
+#[test]
+fn reconcile_always_downloads_messages_without_message_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = FakeSource::new();
+    src.add_folder("INBOX", 1);
+    src.add_message("INBOX", 1, b"Subject: a\r\n\r\n".to_vec(), &[]);
+    src.add_message("INBOX", 2, b"Subject: b\r\n\r\n".to_vec(), &[]);
+    src.add_message("INBOX", 3, eml(3), &[]);
+    run(&mut src, &mut store, &opts(50)).0.unwrap();
+    src.renumber("INBOX", 2, 100);
+    src.fetched_uids.clear();
+    let s = run(&mut src, &mut store, &opts(50)).0.unwrap();
+    assert_eq!(src.fetched_uids, vec![101, 102]);
+    assert_eq!((s.added, s.duplicates), (0, 2));
+}
+
+#[test]
+fn all_fail_batch_errors_but_keeps_earlier_batches() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = inbox(10);
+    src.fail_uids.extend([5, 6, 7, 8]);
+    let (r, events) = run(&mut src, &mut store, &opts(4));
+    assert!(matches!(r, Err(Error::Imap(_))));
+    let failed: Vec<u32> = events
+        .iter()
+        .filter_map(|e| if let Event::MessageFailed { uid, .. } = e { Some(*uid) } else { None })
+        .collect();
+    assert_eq!(failed, vec![5, 6, 7, 8]);
+    assert_eq!(store.messages(ACC).unwrap().len(), 4);
+    assert_eq!(last_uid(&store, "INBOX"), 4);
+}
