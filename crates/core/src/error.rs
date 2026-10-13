@@ -15,3 +15,9 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<rusqlite::Error> for Error {
+    fn from(e: rusqlite::Error) -> Self {
+        Error::Db(e.to_string())
+    }
+}
