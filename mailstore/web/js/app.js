@@ -4,6 +4,44 @@ let currentActiveTab = "tab-dashboard";
 let currentPollingJob = null;
 let currentExportTarget = "imap";
 let activeViewerEmailId = null;
+let lastSelectedExportProfile = "";
+let customConfirmResolver = null;
+
+// Modal Confirmação / Alerta Personalizado de Alta Fidelidade
+function showCustomConfirm(title, message, confirmText = "Confirmar", cancelText = "Cancelar", icon = "⚠️") {
+  return new Promise((resolve) => {
+    customConfirmResolver = resolve;
+    const titleElem = document.getElementById("confirm-modal-heading");
+    const iconElem = document.getElementById("confirm-modal-icon");
+    const msgElem = document.getElementById("confirm-modal-message");
+    const btnOk = document.getElementById("confirm-btn-ok");
+    const btnCancel = document.getElementById("confirm-btn-cancel");
+
+    if (titleElem) titleElem.textContent = title;
+    if (iconElem) iconElem.textContent = icon;
+    if (msgElem) msgElem.textContent = message;
+    if (btnOk) btnOk.textContent = confirmText;
+    if (btnCancel) {
+      btnCancel.textContent = cancelText || "Cancelar";
+      btnCancel.style.display = cancelText ? "inline-flex" : "none";
+    }
+    const modal = document.getElementById("modal-confirm");
+    if (modal) modal.classList.add("active");
+  });
+}
+
+function showCustomAlert(title, message, icon = "ℹ️") {
+  return showCustomConfirm(title, message, "Entendido", null, icon);
+}
+
+function closeCustomConfirmModal(result) {
+  const modal = document.getElementById("modal-confirm");
+  if (modal) modal.classList.remove("active");
+  if (customConfirmResolver) {
+    customConfirmResolver(result);
+    customConfirmResolver = null;
+  }
+}
 
 // Inicialização
 document.addEventListener("DOMContentLoaded", () => {
@@ -283,7 +321,7 @@ async function saveProfileAndOptionallyRun(runImmediately = false) {
   const since_date = document.getElementById("prof-since-date").value || null;
 
   if (!user || !pass || !host) {
-    alert("Por favor, preencha o e-mail, senha e servidor IMAP.");
+    await showCustomAlert("Campos Obrigatórios", "Por favor, preencha o e-mail, senha e servidor IMAP.", "⚠️");
     return;
   }
 
@@ -324,7 +362,7 @@ async function saveProfileAndOptionallyRun(runImmediately = false) {
       runBackupProfile(savedProfile.id);
     }
   } catch (err) {
-    alert("Erro ao salvar perfil: " + err.message);
+    await showCustomAlert("Erro ao Salvar", "Erro ao salvar perfil: " + err.message, "❌");
   }
 }
 
@@ -335,7 +373,14 @@ async function editProfile(id) {
 }
 
 async function deleteProfile(id) {
-  if (!confirm("Deseja realmente remover este perfil? O índice de busca desta conta será excluído.")) return;
+  const confirmed = await showCustomConfirm(
+    "Excluir Perfil de Backup",
+    "Deseja realmente remover este perfil? O índice de busca e configuração desta conta serão excluídos do sistema.",
+    "Sim, excluir",
+    "Cancelar",
+    "🗑️"
+  );
+  if (!confirmed) return;
   await fetch(`/api/profiles/${id}`, { method: "DELETE" });
   loadProfiles();
   loadDashboardData();
@@ -347,19 +392,25 @@ async function runBackupProfile(profileId) {
     const res = await fetch(`/api/profiles/${profileId}/backup`, { method: "POST" });
     if (!res.ok) {
       const err = await res.json();
-      alert("Erro ao iniciar backup: " + err.detail);
+      await showCustomAlert("Erro no Backup", "Erro ao iniciar backup: " + (err.detail || "Falha na conexão"), "❌");
       return;
     }
     openProgressModal("Backup IMAP em Andamento", "backup", profileId);
   } catch (err) {
-    alert("Erro de comunicação: " + err.message);
+    await showCustomAlert("Erro de Comunicação", "Erro de comunicação: " + err.message, "❌");
   }
 }
 
 function openProgressModal(title, jobType, targetId) {
-  document.getElementById("progress-modal-title").textContent = title;
+  const titleElem = document.getElementById("progress-modal-title");
+  if (titleElem) {
+    titleElem.innerHTML = `<span class="modal-icon">${jobType === "backup" ? "📥" : "🚀"}</span> <span>${title}</span>`;
+  }
   document.getElementById("progress-bar-fill").style.width = "0%";
   document.getElementById("progress-percent-label").textContent = "0%";
+  document.getElementById("prog-stat-processed").textContent = "0 / 0";
+  document.getElementById("prog-stat-success").textContent = "0";
+  document.getElementById("prog-stat-errors").textContent = "0";
   document.getElementById("progress-log-terminal").innerHTML = "";
   document.getElementById("btn-cancel-job").style.display = "inline-flex";
   document.getElementById("btn-close-progress").style.display = "none";
@@ -377,11 +428,25 @@ function openProgressModal(title, jobType, targetId) {
       document.getElementById("progress-percent-label").textContent = `${data.percent || 0}%`;
       
       if (jobType === "backup") {
-        document.getElementById("progress-details-current").textContent = `Pasta: ${data.current_folder || '-'} (${data.current_msg || 0}/${data.total_msgs || 0})`;
+        const curMsg = data.current_msg || 0;
+        const totMsgs = data.total_msgs || 0;
+        const errCount = data.error_count || 0;
+        const succCount = curMsg >= errCount ? (curMsg - errCount) : curMsg;
+        document.getElementById("progress-details-current").textContent = `Pasta: ${data.current_folder || '-'} (${curMsg}/${totMsgs})`;
         document.getElementById("progress-speed").textContent = `${data.speed_mps || 0} msgs/s`;
+        document.getElementById("prog-stat-processed").textContent = `${curMsg} / ${totMsgs}`;
+        document.getElementById("prog-stat-success").textContent = succCount;
+        document.getElementById("prog-stat-errors").textContent = errCount;
       } else {
-        document.getElementById("progress-details-current").textContent = `Progresso: ${data.current_index || 0}/${data.total_messages || 0}`;
+        const curIdx = data.current_index || 0;
+        const totMsgs = data.total_messages || 0;
+        const succCount = data.success_count || 0;
+        const errCount = data.error_count || 0;
+        document.getElementById("progress-details-current").textContent = `Progresso: ${curIdx}/${totMsgs}`;
         document.getElementById("progress-speed").textContent = data.current_subject ? data.current_subject.substring(0, 30) : "";
+        document.getElementById("prog-stat-processed").textContent = `${curIdx} / ${totMsgs}`;
+        document.getElementById("prog-stat-success").textContent = succCount;
+        document.getElementById("prog-stat-errors").textContent = errCount;
       }
 
       // Logs
@@ -401,7 +466,7 @@ function openProgressModal(title, jobType, targetId) {
         const statusDescElem = document.getElementById("progress-status-desc");
         if (data.status === "success") {
           const count = data.success_count !== undefined ? data.success_count : (data.total_messages || data.total_msgs || 0);
-          statusDescElem.innerHTML = `<span style="color: var(--success); font-weight: 600;">✅ Concluído com sucesso! (${count} e-mails transferidos)</span>`;
+          statusDescElem.innerHTML = `<span style="color: var(--success); font-weight: 600;">✅ Concluído com sucesso! (${count} e-mails processados)</span>`;
         } else if (data.status === "partial") {
           statusDescElem.innerHTML = `<span style="color: #d97706; font-weight: 600;">⚠️ Concluído com avisos: ${data.success_count || 0} enviados, ${data.error_count || 0} falhas.</span>`;
         } else if (data.status === "warning") {
@@ -722,7 +787,7 @@ async function openEmailViewer(messageId) {
       window.location.href = `/api/messages/${emailData.id}/eml`;
     };
   } catch (err) {
-    alert("Erro ao carregar detalhes da mensagem: " + err.message);
+    await showCustomAlert("Erro na Mensagem", "Erro ao carregar detalhes da mensagem: " + err.message, "❌");
   }
 }
 
@@ -766,30 +831,83 @@ async function loadExportAccounts() {
     const res = await fetch("/api/profiles");
     const profiles = await res.json();
     const sel = document.getElementById("export-source-profile");
-    sel.innerHTML = '<option value="">Todas as contas arquivadas</option>' +
-      profiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)} (${p.imap.username})</option>`).join("");
+    let optionsHtml = '<option value="">-- Selecione uma conta --</option>';
+    profiles.forEach(p => {
+      optionsHtml += `<option value="${p.id}">👤 ${escapeHtml(p.name)} (${p.imap.username})</option>`;
+    });
+    optionsHtml += '<option value="__all__">📁 Todas as contas arquivadas</option>';
+    sel.innerHTML = optionsHtml;
+    lastSelectedExportProfile = "";
     loadFoldersForExport();
   } catch (err) {
     console.error(err);
   }
 }
 
+async function handleExportProfileChange() {
+  const sel = document.getElementById("export-source-profile");
+  const val = sel.value;
+  if (val === "__all__") {
+    const confirmed = await showCustomConfirm(
+      "Atenção: Exportar Todas as Contas",
+      "Tem certeza de que deseja selecionar TODAS as contas arquivadas para exportação?\n\nEsta operação reunirá o histórico completo de e-mails de múltiplos perfis e enviará para o mesmo destino.",
+      "Sim, tenho certeza",
+      "Cancelar",
+      "⚠️"
+    );
+    if (!confirmed) {
+      sel.value = lastSelectedExportProfile;
+      loadFoldersForExport();
+      return;
+    }
+  }
+  lastSelectedExportProfile = sel.value;
+  loadFoldersForExport();
+}
+
 async function loadFoldersForExport() {
-  const accountId = document.getElementById("export-source-profile").value;
+  const profileVal = document.getElementById("export-source-profile").value;
   const sel = document.getElementById("export-source-folder");
-  if (!accountId) {
+  if (!profileVal || profileVal === "__all__") {
     sel.innerHTML = '<option value="">Todas as pastas</option>';
+    sel.disabled = (profileVal === "__all__");
     return;
   }
-  const res = await fetch(`/api/folders?account_id=${encodeURIComponent(accountId)}`);
-  const folders = await res.json();
-  sel.innerHTML = '<option value="">Todas as pastas</option>' +
-    folders.map(f => `<option value="${escapeHtml(f.folder_name)}">${escapeHtml(f.folder_name)} (${f.message_count})</option>`).join("");
+  sel.disabled = false;
+  try {
+    const res = await fetch(`/api/folders?account_id=${encodeURIComponent(profileVal)}`);
+    const folders = await res.json();
+    sel.innerHTML = '<option value="">Todas as pastas</option>' +
+      folders.map(f => `<option value="${escapeHtml(f.folder_name)}">${escapeHtml(f.folder_name)} (${f.message_count})</option>`).join("");
+  } catch (err) {
+    console.error(err);
+  }
 }
 
 async function startExport() {
-  const profileId = document.getElementById("export-source-profile").value || null;
-  const folder = document.getElementById("export-source-folder").value || null;
+  const profileVal = document.getElementById("export-source-profile").value;
+  if (!profileVal) {
+    await showCustomAlert(
+      "Conta Não Selecionada",
+      "Por favor, selecione uma conta de origem ou a opção 'Todas as contas arquivadas' antes de iniciar.",
+      "⚠️"
+    );
+    return;
+  }
+
+  const profileId = (profileVal === "__all__") ? null : profileVal;
+  const folder = (profileVal === "__all__") ? null : (document.getElementById("export-source-folder").value || null);
+
+  if (profileVal === "__all__") {
+    const confirmed = await showCustomConfirm(
+      "Confirmação de Exportação Global",
+      "Você está prestes a exportar o acervo de TODAS as contas cadastradas simultaneamente.\n\nDeseja prosseguir?",
+      "Iniciar Exportação",
+      "Cancelar",
+      "🚀"
+    );
+    if (!confirmed) return;
+  }
 
   try {
     if (currentExportTarget === "imap") {
@@ -801,7 +919,7 @@ async function startExport() {
       const prefix = document.getElementById("dest-imap-prefix").value.trim();
 
       if (!host || !user || !pass) {
-        alert("Preencha o servidor, usuário e senha do IMAP destino.");
+        await showCustomAlert("Campos Obrigatórios", "Preencha o servidor, usuário e senha do IMAP destino.", "⚠️");
         return;
       }
 
@@ -825,7 +943,7 @@ async function startExport() {
     } else if (currentExportTarget === "pst") {
       const outPath = document.getElementById("dest-pst-path").value.trim();
       if (!outPath) {
-        alert("Informe o caminho do arquivo .pst de saída.");
+        await showCustomAlert("Caminho Obrigatório", "Informe o caminho do arquivo .pst de saída.", "⚠️");
         return;
       }
 
@@ -840,7 +958,7 @@ async function startExport() {
     } else if (currentExportTarget === "eml") {
       const outDir = document.getElementById("dest-eml-dir").value.trim();
       if (!outDir) {
-        alert("Informe o diretório de destino.");
+        await showCustomAlert("Diretório Obrigatório", "Informe o diretório de destino para os arquivos .EML.", "⚠️");
         return;
       }
 
@@ -855,7 +973,7 @@ async function startExport() {
     } else if (currentExportTarget === "mbox") {
       const outPath = document.getElementById("dest-mbox-path").value.trim();
       if (!outPath) {
-        alert("Informe o caminho do arquivo .mbox de saída.");
+        await showCustomAlert("Caminho Obrigatório", "Informe o caminho do arquivo .mbox de saída.", "⚠️");
         return;
       }
 
@@ -868,7 +986,7 @@ async function startExport() {
       openProgressModal("Exportação MBOX em Andamento", "export", null);
     }
   } catch (err) {
-    alert("Falha ao iniciar exportação: " + err.message);
+    await showCustomAlert("Falha na Operação", "Falha ao iniciar exportação: " + err.message, "❌");
   }
 }
 
@@ -887,7 +1005,7 @@ async function runIntegrityAudit() {
     document.getElementById("audit-missing").textContent = report.missing_count;
     document.getElementById("audit-corrupt").textContent = report.corrupt_count;
   } catch (err) {
-    alert("Erro ao executar auditoria: " + err.message);
+    await showCustomAlert("Erro na Auditoria", "Erro ao executar auditoria: " + err.message, "❌");
   }
 }
 
