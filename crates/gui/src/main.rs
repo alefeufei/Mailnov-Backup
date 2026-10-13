@@ -66,6 +66,19 @@ async fn test_connection(
 }
 
 #[tauri::command]
+async fn test_saved_connection(
+    state: AppStateRef<'_>,
+    name: String,
+    role: String,
+    endpoint: EndpointInput,
+) -> Result<Vec<String>, String> {
+    blocking(&state, move |s| {
+        logic::test_saved_connection(s, &name, &role, &endpoint)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn save_profile(state: AppStateRef<'_>, input: ProfileInput) -> Result<(), String> {
     blocking(&state, move |s| logic::save_profile(s, input)).await
 }
@@ -176,6 +189,7 @@ fn main() {
             list_profiles,
             detect_server,
             test_connection,
+            test_saved_connection,
             save_profile,
             set_target,
             delete_profile,

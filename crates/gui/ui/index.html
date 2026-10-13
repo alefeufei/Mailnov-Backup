@@ -1,1 +1,324 @@
-<!doctype html><title>MailBackup</title><p>stub
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MailBackup</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Pular para o conteúdo</a>
+  <div class="app">
+    <aside class="sidebar" aria-label="Contas">
+      <div class="brand">
+        <img src="icon.png" alt="" width="28" height="28">
+        <span>MailBackup</span>
+      </div>
+      <button type="button" id="add-account" class="btn btn-primary btn-block">
+        <span aria-hidden="true" class="plus">+</span> Adicionar conta
+      </button>
+      <h2 class="sidebar-title" id="accounts-title">Contas</h2>
+      <ul id="account-list" class="account-list" aria-labelledby="accounts-title"></ul>
+      <p class="sidebar-foot">Backup local de e-mail IMAP</p>
+    </aside>
+
+    <main id="main" class="main" tabindex="-1">
+      <!-- first launch -->
+      <section id="empty-state" class="empty" hidden>
+        <img src="icon.png" alt="" width="96" height="96">
+        <h1>Nenhuma conta ainda</h1>
+        <p>Adicione sua primeira conta de e-mail para começar a fazer backup das suas mensagens
+          em arquivos <code>.eml</code> no seu computador.</p>
+        <button type="button" id="empty-add" class="btn btn-primary btn-lg">+ Adicionar conta</button>
+        <p class="muted small">As senhas ficam guardadas no Gerenciador de Credenciais do Windows,
+          nunca em arquivos.</p>
+      </section>
+
+      <!-- selected account -->
+      <section id="account-view" class="account-view" hidden aria-labelledby="acct-title">
+        <header class="acct-header">
+          <div class="avatar" id="acct-avatar" aria-hidden="true"></div>
+          <div class="acct-id">
+            <h1 id="acct-title"></h1>
+            <p id="acct-sub" class="muted"></p>
+          </div>
+          <span id="acct-pill" class="pill"></span>
+        </header>
+
+        <div class="actions" role="group" aria-label="Ações principais">
+          <button type="button" class="btn btn-primary btn-lg" id="btn-archive">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 19h16"/></svg>
+            Arquivar agora
+          </button>
+          <button type="button" class="btn btn-lg" id="btn-export">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 15V3m0 0L7 8m5-5 5 5M4 15v4h16v-4"/></svg>
+            Exportar…
+          </button>
+          <button type="button" class="btn btn-lg" id="btn-migrate">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 8h13m0 0-4-4m4 4-4 4M20 16H7m0 0 4-4m-4 4 4 4"/></svg>
+            Migrar
+          </button>
+        </div>
+        <div class="actions secondary" role="group" aria-label="Outras ações">
+          <button type="button" class="btn btn-ghost" id="btn-verify">Verificar</button>
+          <button type="button" class="btn btn-ghost" id="btn-reindex">Reconstruir índice</button>
+          <button type="button" class="btn btn-ghost" id="btn-open">Abrir pasta do backup</button>
+          <button type="button" class="btn btn-ghost" id="btn-edit">Editar conta</button>
+          <button type="button" class="btn btn-ghost btn-danger-text" id="btn-remove">Remover conta</button>
+        </div>
+
+        <section id="progress-card" class="card progress-card" hidden aria-labelledby="progress-title">
+          <div class="progress-head">
+            <div>
+              <h2 id="progress-title"></h2>
+              <p id="progress-sub" class="muted" aria-live="polite"></p>
+            </div>
+            <button type="button" class="btn" id="btn-cancel">Cancelar</button>
+          </div>
+          <div class="bar" id="progress-bar" role="progressbar" aria-labelledby="progress-title" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="bar-fill" id="progress-fill"></div>
+          </div>
+          <dl class="counters">
+            <div><dt>Pasta</dt><dd id="pc-folder">—</dd></div>
+            <div><dt>Nesta pasta</dt><dd id="pc-folder-count">—</dd></div>
+            <div><dt>Processadas</dt><dd id="pc-processed">0</dd></div>
+            <div><dt>Pastas concluídas</dt><dd id="pc-folders">0</dd></div>
+            <div><dt>Falhas</dt><dd id="pc-failed">0</dd></div>
+          </dl>
+          <details id="live-log-wrap" class="live-log" hidden>
+            <summary>Falhas durante a execução (<span id="live-log-count">0</span>)</summary>
+            <ul id="live-log" aria-live="polite"></ul>
+          </details>
+        </section>
+
+        <section id="result" class="banner" hidden role="status" aria-live="polite">
+          <div class="banner-icon" aria-hidden="true"></div>
+          <div class="banner-body">
+            <h2 id="result-title"></h2>
+            <p id="result-text"></p>
+            <details id="result-details" hidden>
+              <summary id="result-details-summary"></summary>
+              <ul id="result-failures" class="failure-list"></ul>
+            </details>
+          </div>
+          <button type="button" class="icon-btn" id="result-close" aria-label="Fechar aviso">×</button>
+        </section>
+
+        <div class="stats" aria-label="Resumo do backup">
+          <div class="stat"><span class="stat-label">Mensagens arquivadas</span><span class="stat-value" id="st-messages">—</span></div>
+          <div class="stat"><span class="stat-label">Pastas</span><span class="stat-value" id="st-folders">—</span></div>
+          <div class="stat"><span class="stat-label">Último arquivamento</span><span class="stat-value small" id="st-last">—</span></div>
+          <div class="stat"><span class="stat-label">Destino de exportação</span><span class="stat-value small" id="st-target">—</span></div>
+        </div>
+
+        <section class="card" aria-labelledby="folders-title">
+          <div class="card-head">
+            <h2 id="folders-title">Pastas no backup</h2>
+            <span class="muted small" id="folders-note"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="folder-table">
+              <thead><tr><th scope="col">Pasta</th><th scope="col" class="num">Mensagens</th></tr></thead>
+              <tbody id="folder-rows"></tbody>
+            </table>
+          </div>
+          <p id="folders-empty" class="muted" hidden></p>
+        </section>
+
+        <section class="card details-card" aria-labelledby="config-title">
+          <h2 id="config-title">Configuração</h2>
+          <dl class="kv" id="config-list"></dl>
+        </section>
+
+        <details class="card notes">
+          <summary>Limitações conhecidas</summary>
+          <ul>
+            <li><strong>Cancelar</strong> para no próximo contato com o servidor; o que já foi gravado continua no backup e a próxima execução continua de onde parou.</li>
+            <li><strong>Exportação para IMAP:</strong> se a conexão cair durante o envio de uma mensagem, ela pode ser enviada de novo na próxima vez e ficar <strong>duplicada</strong> no destino.</li>
+            <li>Gmail e Microsoft 365 exigem <strong>senha de app</strong> (ainda não há login OAuth).</li>
+            <li>Não há tempo limite de conexão: se o servidor travar sem responder, a operação fica esperando (use Cancelar e tente de novo).</li>
+            <li>Depois de <strong>Reconstruir índice</strong>, não exporte de novo para um servidor IMAP que já recebeu as mensagens (elas seriam reenviadas).</li>
+            <li>Não use o MailBackup e a linha de comando <code>mailbackup</code> ao mesmo tempo na mesma pasta de backup. Mantenha o backup num disco local (não numa pasta de rede).</li>
+          </ul>
+        </details>
+      </section>
+    </main>
+  </div>
+
+  <!-- add / edit account wizard -->
+  <dialog id="wizard" class="modal wide" aria-labelledby="wz-title">
+    <form method="dialog" id="wz-form" novalidate>
+      <header class="modal-head">
+        <h2 id="wz-title">Adicionar conta</h2>
+        <ol class="steps" id="wz-steps" aria-label="Etapas">
+          <li data-step="1">Conta</li>
+          <li data-step="2">Pastas</li>
+          <li data-step="3">Destino</li>
+          <li data-step="4">Resumo</li>
+        </ol>
+      </header>
+
+      <div class="modal-body">
+        <!-- step 1 -->
+        <section class="wz-step" data-step="1">
+          <div class="field">
+            <label for="wz-email">Endereço de e-mail</label>
+            <input type="email" id="wz-email" autocomplete="off" spellcheck="false" placeholder="voce@exemplo.com.br">
+          </div>
+          <div class="field">
+            <label for="wz-password">Senha</label>
+            <div class="input-group">
+              <input type="password" id="wz-password" autocomplete="off" spellcheck="false">
+              <button type="button" class="btn btn-ghost" id="wz-pw-toggle" aria-controls="wz-password" aria-pressed="false">Mostrar</button>
+            </div>
+            <p class="help" id="wz-pw-help">A senha é guardada no Gerenciador de Credenciais do Windows.</p>
+          </div>
+          <p id="wz-hint" class="hint" hidden></p>
+          <details id="wz-advanced" class="advanced">
+            <summary>Servidor <span id="wz-server-summary" class="muted"></span></summary>
+            <div class="grid-2">
+              <div class="field"><label for="wz-host">Servidor IMAP</label><input id="wz-host" spellcheck="false" autocomplete="off"></div>
+              <div class="field"><label for="wz-port">Porta</label><input id="wz-port" type="number" min="1" max="65535" inputmode="numeric"></div>
+              <div class="field"><label for="wz-tls">Segurança</label>
+                <select id="wz-tls"><option value="implicit">SSL/TLS (porta 993)</option><option value="starttls">STARTTLS (porta 143)</option></select>
+              </div>
+              <div class="field"><label for="wz-user">Usuário</label><input id="wz-user" spellcheck="false" autocomplete="off"></div>
+            </div>
+            <p class="help">A conexão é sempre criptografada e o certificado do servidor é sempre verificado.</p>
+          </details>
+          <div class="test-row">
+            <button type="button" class="btn" id="wz-test">Testar conexão</button>
+            <div id="wz-test-result" class="test-result" role="status" aria-live="polite"></div>
+          </div>
+        </section>
+
+        <!-- step 2 -->
+        <section class="wz-step" data-step="2" hidden>
+          <div class="row-between">
+            <p class="lead">Escolha as pastas para arquivar.</p>
+            <div class="btn-row">
+              <button type="button" class="btn btn-ghost btn-sm" id="wz-all">Marcar todas</button>
+              <button type="button" class="btn btn-ghost btn-sm" id="wz-none">Desmarcar todas</button>
+            </div>
+          </div>
+          <div class="tree-wrap"><ul id="wz-tree" class="tree" role="tree" aria-label="Pastas do servidor"></ul></div>
+          <p class="help" id="wz-folder-count"></p>
+          <div class="field inline">
+            <label class="check"><input type="checkbox" id="wz-since-on"> Arquivar apenas e-mails desde</label>
+            <input type="date" id="wz-since" aria-label="Data inicial" disabled>
+          </div>
+          <p class="help">Com todas as pastas marcadas, pastas criadas no futuro também serão arquivadas.</p>
+        </section>
+
+        <!-- step 3 -->
+        <section class="wz-step" data-step="3" hidden>
+          <div class="field">
+            <label for="wz-name">Nome da conta no MailBackup</label>
+            <input id="wz-name" spellcheck="false" autocomplete="off" maxlength="64">
+            <p class="help">Letras sem acento, números, ponto, hífen e sublinhado.</p>
+          </div>
+          <div class="field">
+            <label for="wz-dir">Pasta do backup</label>
+            <div class="input-group">
+              <input id="wz-dir" spellcheck="false" autocomplete="off">
+              <button type="button" class="btn" id="wz-dir-pick">Escolher…</button>
+            </div>
+            <p class="help">As mensagens são guardadas aqui como arquivos <code>.eml</code>, com um índice. Prefira um disco local.</p>
+          </div>
+        </section>
+
+        <!-- step 4 -->
+        <section class="wz-step" data-step="4" hidden>
+          <p class="lead">Confira antes de concluir.</p>
+          <dl class="kv" id="wz-summary"></dl>
+          <label class="check" id="wz-run-wrap"><input type="checkbox" id="wz-run-now" checked> Arquivar agora ao concluir</label>
+        </section>
+
+        <div id="wz-error" class="form-error" role="alert" hidden></div>
+      </div>
+
+      <footer class="modal-foot">
+        <button type="button" class="btn btn-ghost" id="wz-cancel">Cancelar</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="wz-back">Voltar</button>
+        <button type="button" class="btn btn-primary" id="wz-next">Avançar</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- export destination -->
+  <dialog id="export-dialog" class="modal" aria-labelledby="ex-title">
+    <form method="dialog" id="ex-form" novalidate>
+      <header class="modal-head"><h2 id="ex-title">Exportar</h2></header>
+      <div class="modal-body">
+        <fieldset class="choice">
+          <legend>Para onde exportar as mensagens do backup?</legend>
+          <label class="choice-card"><input type="radio" name="ex-kind" value="eml" checked>
+            <span><strong>Pasta de arquivos .eml</strong><span class="muted">Uma cópia de cada mensagem, organizada por pasta.</span></span></label>
+          <label class="choice-card"><input type="radio" name="ex-kind" value="imap">
+            <span><strong>Outro servidor IMAP</strong><span class="muted">Copia as mensagens para outra conta de e-mail (migração).</span></span></label>
+        </fieldset>
+        <div id="ex-eml">
+          <div class="field">
+            <label for="ex-dir">Pasta de destino</label>
+            <div class="input-group">
+              <input id="ex-dir" spellcheck="false" autocomplete="off">
+              <button type="button" class="btn" id="ex-dir-pick">Escolher…</button>
+            </div>
+          </div>
+        </div>
+        <div id="ex-imap" hidden>
+          <div class="field"><label for="ex-email">E-mail da conta de destino (preenche o servidor)</label><input id="ex-email" type="email" spellcheck="false" autocomplete="off"></div>
+          <div class="grid-2">
+            <div class="field"><label for="ex-host">Servidor IMAP</label><input id="ex-host" spellcheck="false" autocomplete="off"></div>
+            <div class="field"><label for="ex-port">Porta</label><input id="ex-port" type="number" min="1" max="65535" inputmode="numeric"></div>
+            <div class="field"><label for="ex-tls">Segurança</label>
+              <select id="ex-tls"><option value="implicit">SSL/TLS (porta 993)</option><option value="starttls">STARTTLS (porta 143)</option></select></div>
+            <div class="field"><label for="ex-user">Usuário</label><input id="ex-user" spellcheck="false" autocomplete="off"></div>
+          </div>
+          <div class="field">
+            <label for="ex-password">Senha</label>
+            <div class="input-group">
+              <input type="password" id="ex-password" autocomplete="off" spellcheck="false">
+              <button type="button" class="btn btn-ghost" id="ex-pw-toggle" aria-controls="ex-password" aria-pressed="false">Mostrar</button>
+            </div>
+            <p class="help" id="ex-pw-help"></p>
+          </div>
+          <p id="ex-hint" class="hint" hidden></p>
+          <div class="test-row">
+            <button type="button" class="btn" id="ex-test">Testar conexão</button>
+            <div id="ex-test-result" class="test-result" role="status" aria-live="polite"></div>
+          </div>
+          <p class="warning"><strong>Atenção:</strong> se a conexão cair durante o envio de uma mensagem, ela pode
+            ser enviada de novo na próxima exportação e ficar duplicada no destino. O que já foi
+            enviado com sucesso nunca é reenviado.</p>
+        </div>
+        <div id="ex-error" class="form-error" role="alert" hidden></div>
+      </div>
+      <footer class="modal-foot">
+        <button type="button" class="btn btn-ghost" id="ex-cancel">Cancelar</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn" id="ex-save">Salvar destino</button>
+        <button type="button" class="btn btn-primary" id="ex-run">Salvar e exportar agora</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- confirmation -->
+  <dialog id="confirm" class="modal narrow" aria-labelledby="cf-title" aria-describedby="cf-text">
+    <form method="dialog">
+      <header class="modal-head"><h2 id="cf-title"></h2></header>
+      <div class="modal-body"><p id="cf-text" class="pre"></p></div>
+      <footer class="modal-foot">
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost" id="cf-no">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="cf-yes"></button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

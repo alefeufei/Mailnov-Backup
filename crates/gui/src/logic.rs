@@ -337,6 +337,22 @@ pub fn test_connection(
         })
 }
 
+/// Tests `ep` with the password already stored for profile `name` (`role` "source" or
+/// "target"), so an edit does not have to ask for the password again.
+pub fn test_saved_connection(
+    state: &AppState,
+    name: &str,
+    role: &str,
+    ep: &EndpointInput,
+) -> Result<Vec<String>, String> {
+    let role = match role {
+        "target" => SecretRole::Target,
+        _ => SecretRole::Source,
+    };
+    let pw = service::password(state.secrets.as_ref(), name, role).map_err(err)?;
+    test_connection(state, ep, pw)
+}
+
 /// What the account wizard sends to create (or edit) a profile.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

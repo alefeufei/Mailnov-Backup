@@ -228,6 +228,20 @@ fn test_connection_returns_folders_or_plain_language_error() {
 }
 
 #[test]
+fn saved_connection_uses_the_stored_password() {
+    let e = env();
+    assert!(
+        test_saved_connection(&e.state, "work", "source", &ep_input())
+            .unwrap_err()
+            .contains("Credenciais")
+    );
+    save_profile(&e.state, new_profile(&e, "work")).unwrap();
+    let f = test_saved_connection(&e.state, "work", "source", &ep_input()).unwrap();
+    assert_eq!(f.len(), 2);
+    assert!(test_saved_connection(&e.state, "work", "target", &ep_input()).is_err());
+}
+
+#[test]
 fn save_profile_stores_password_in_secret_store_only() {
     let e = env();
     save_profile(&e.state, new_profile(&e, "work")).unwrap();
