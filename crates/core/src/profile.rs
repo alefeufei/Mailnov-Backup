@@ -107,9 +107,27 @@ impl ProfileStore {
         Ok(self.profiles_dir().join(format!("{name}.toml")))
     }
 
-    /// Writes atomically (temp file in the same directory, then rename).
+    /// An existing profile whose name equals `name` ignoring ASCII case but is spelled
+    /// differently. Profile files live on case-insensitive file systems (Windows), so such
+    /// names would share one file.
+    pub fn case_conflict(&self, name: &str) -> Result<Option<String>> {
+        Ok(self
+            .list()?
+            .into_iter()
+            .find(|n| n != name && n.eq_ignore_ascii_case(name)))
+    }
+
+    /// Writes atomically (temp file in the same directory, then rename). Refuses a name that
+    /// differs only by case from an existing profile.
     pub fn save(&self, p: &Profile) -> Result<()> {
         let path = self.path_for(&p.name)?;
+        if let Some(other) = self.case_conflict(&p.name)? {
+            return Err(Error::Config(format!(
+                "profile '{}' conflicts with the existing profile '{other}' \
+                 (profile names are case-insensitive)",
+                p.name
+            )));
+        }
         let text = toml::to_string(p)
             .map_err(|e| Error::Config(format!("cannot serialize profile '{}': {e}", p.name)))?;
         std::fs::create_dir_all(self.profiles_dir())?;
@@ -143,6 +161,13 @@ impl ProfileStore {
                 e.message()
             ))
         })?;
+        if p.name != name && p.name.eq_ignore_ascii_case(name) {
+            return Err(Error::Config(format!(
+                "profile '{name}' does not exist; did you mean '{}'? \
+                 (profile names are case-insensitive)",
+                p.name
+            )));
+        }
         if p.name != name {
             return Err(Error::Config(format!(
                 "profile file '{name}.toml' declares a different name '{}'",
@@ -369,6 +394,25 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(s.load("b"), Err(Error::Config(_))));
+    }
+
+    #[test]
+    fn names_differing_only_by_case_never_overwrite_each_other() {
+        let (_d, s) = store();
+        s.save(&profile("work")).unwrap();
+        let err = s.save(&profile("Work")).unwrap_err();
+        assert!(
+            matches!(err, Error::Config(ref m) if m.contains("'work'")),
+            "{err}"
+        );
+        assert_eq!(s.load("work").unwrap(), profile("work"));
+        assert_eq!(s.list().unwrap(), vec!["work".to_string()]);
+        assert_eq!(s.case_conflict("WORK").unwrap(), Some("work".to_string()));
+        assert_eq!(s.case_conflict("work").unwrap(), None);
+        // the right spelling is suggested when looking a profile up with the wrong case
+        if let Err(Error::Config(m)) = s.load("WORK") {
+            assert!(m.contains("'work'"), "{m}");
+        }
     }
 
     #[test]

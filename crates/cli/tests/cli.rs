@@ -487,3 +487,141 @@ fn verify_and_status_refuse_when_only_index_db_deleted() {
         cmd(&e).args([c, "w"]).assert().success();
     }
 }
+
+// ---- final fix wave ----
+
+fn folder_last_uids(e: &Env, account: &str) -> Vec<(String, u32, u32)> {
+    let s = FsSqliteStore::open(&e.archive).unwrap();
+    ["INBOX", "Sent"]
+        .iter()
+        .map(|f| {
+            let st = s.folder_state(account, f).unwrap().unwrap();
+            (f.to_string(), st.uidvalidity, st.last_uid)
+        })
+        .collect()
+}
+
+#[test]
+fn changing_since_resets_last_uid_so_older_mail_is_backfilled() {
+    let e = env();
+    add(&e, "w", &["--since", "2024-01-01"]).success();
+    populate(&e, "w");
+    let untouched = vec![("INBOX".to_string(), 1, 2), ("Sent".to_string(), 1, 1)];
+    // same value or unrelated edits: nothing is reset
+    cmd(&e)
+        .args([
+            "profile",
+            "edit",
+            "w",
+            "--since",
+            "2024-01-01",
+            "--folder",
+            "INBOX",
+        ])
+        .assert()
+        .success();
+    assert_eq!(folder_last_uids(&e, "w"), untouched);
+    cmd(&e)
+        .args(["profile", "edit", "w", "--clear-since"])
+        .assert()
+        .success();
+    let reset = vec![("INBOX".to_string(), 1, 0), ("Sent".to_string(), 1, 0)];
+    assert_eq!(folder_last_uids(&e, "w"), reset);
+    assert_eq!(
+        FsSqliteStore::open(&e.archive)
+            .unwrap()
+            .messages("w")
+            .unwrap()
+            .len(),
+        3
+    );
+    // moving the date also resets
+    populate(&e, "w");
+    cmd(&e)
+        .args(["profile", "edit", "w", "--since", "2023-05-06"])
+        .assert()
+        .success();
+    assert_eq!(folder_last_uids(&e, "w"), reset);
+}
+
+#[test]
+fn changing_since_without_an_archive_creates_nothing() {
+    let e = env();
+    add(&e, "w", &["--since", "2024-01-01"]).success();
+    cmd(&e)
+        .args(["profile", "edit", "w", "--clear-since"])
+        .assert()
+        .success();
+    assert!(!e.archive.exists());
+}
+
+#[test]
+fn relative_paths_are_stored_absolute() {
+    let e = env();
+    let cwd = e.cfg.parent().unwrap().join("work-dir");
+    std::fs::create_dir_all(&cwd).unwrap();
+    cmd(&e)
+        .current_dir(&cwd)
+        .args([
+            "profile",
+            "add",
+            "w",
+            "--host",
+            "h",
+            "--user",
+            "u",
+            "--archive-dir",
+            "rel-archive",
+            "--target-eml",
+            "rel-out",
+        ])
+        .write_stdin("pw\n")
+        .assert()
+        .success();
+    let o = out(&cmd(&e).args(["profile", "show", "w"]).assert().success());
+    let want = |p: &str| {
+        std::path::absolute(cwd.join(p))
+            .unwrap()
+            .display()
+            .to_string()
+    };
+    assert!(
+        o.contains(&format!("archive_dir: {}", want("rel-archive"))),
+        "{o}"
+    );
+    assert!(
+        o.contains(&format!("target: eml {}", want("rel-out"))),
+        "{o}"
+    );
+    cmd(&e)
+        .current_dir(&cwd)
+        .args([
+            "profile",
+            "edit",
+            "w",
+            "--archive-dir",
+            "other",
+            "--target-eml",
+            "o2",
+        ])
+        .assert()
+        .success();
+    let o = out(&cmd(&e).args(["profile", "show", "w"]).assert().success());
+    assert!(
+        o.contains(&format!("archive_dir: {}", want("other"))),
+        "{o}"
+    );
+    assert!(o.contains(&format!("target: eml {}", want("o2"))), "{o}");
+}
+
+#[test]
+fn profile_names_differing_only_by_case_are_rejected() {
+    let e = env();
+    add(&e, "work", &["--since", "2024-01-01"]).success();
+    let a = add(&e, "Work", &[]).failure().code(1);
+    assert!(err(&a).contains("work"), "{}", err(&a));
+    let o = out(&cmd(&e).args(["profile", "show", "work"]).assert().success());
+    assert!(o.contains("2024-01-01"), "{o}");
+    let o = out(&cmd(&e).args(["profile", "list"]).assert().success());
+    assert_eq!(o.trim(), "work");
+}

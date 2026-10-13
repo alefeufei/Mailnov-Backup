@@ -17,7 +17,7 @@ Servidor Dovecot descartável usado pelos testes `#[ignore]` de integração:
 | `docker-compose.yml` | Dovecot 2.3 (`dovecot/dovecot:2.3.21.1`) com IMAPS na porta 993 |
 | `conf/dovecot.conf` | Configuração completa (substitui a da imagem): passwd-file, Maildir `LAYOUT=fs` (separador `/`), TLS obrigatório |
 | `users` | Usuários `origem`, `destino`, `testuser` |
-| `make-certs.sh` | Gera uma CA local e um certificado de servidor para `localhost` (`certs/`, ignorado pelo git) |
+| `make-certs.sh` | Gera uma CA local restrita a `localhost`/`127.0.0.1` e um certificado de servidor (`certs/`, ignorado pelo git); apaga a chave da CA no fim |
 | `seed/` | Mensagens de exemplo (ver `seed/folders/README.md`) |
 
 Credenciais (**somente teste, nunca reutilize**):
@@ -32,15 +32,18 @@ Credenciais (**somente teste, nunca reutilize**):
 
 1. Gere os certificados (precisa do `openssl`; o Git for Windows traz um):
    `sh tests/dovecot/make-certs.sh`
+   A CA gerada tem *name constraints* críticas (só pode valer para `DNS:localhost` e
+   `IP:127.0.0.1`), e o script **apaga `ca.key`** depois de assinar o certificado do servidor: ela
+   não serve para interceptar nenhum outro site, e ninguém consegue assinar mais nada com ela. Para
+   gerar de novo, rode o script outra vez (sobrescreve tudo).
 2. Faça o sistema operacional **confiar na CA** `tests/dovecot/certs/ca.crt`. O mailbackup sempre
    valida o certificado (não existe opção para desligar isso) e usa as raízes do sistema.
    - Windows (PowerShell, usuário atual; o Windows mostra uma janela de confirmação):
      `certutil -user -addstore Root tests\dovecot\certs\ca.crt`
-     Para remover depois: `certutil -user -delstore Root "mailbackup test CA"`.
    - Linux: copie para `/usr/local/share/ca-certificates/mailbackup-test-ca.crt` e rode
      `sudo update-ca-certificates` (ou exporte `SSL_CERT_FILE=.../ca.crt`).
    - macOS: `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.crt`.
-   A CA vale 30 dias; remova-a do repositório de confiança quando terminar.
+   A CA vale 30 dias; **remova-a ao terminar** (passo 6).
 3. Suba o servidor: `docker compose -f tests/dovecot/docker-compose.yml up -d`
 4. Rode o teste de ponta a ponta:
    `cargo test -p mailbackup --features test-secrets --test e2e_dovecot -- --ignored --nocapture`
@@ -52,6 +55,11 @@ Credenciais (**somente teste, nunca reutilize**):
    `docker compose -f tests/dovecot/docker-compose.yml exec -T dovecot doveadm save -u testuser -m INBOX < tests/dovecot/seed/001.eml`
    (comando não testado) e rode
    `MAILBACKUP_TEST_IMAP_USER=testuser cargo test -p mailbackup-core --features testing -- --ignored archive_from_dovecot`.
+6. **Remova a CA do repositório de confiança** e desligue o servidor:
+   - Windows: `certutil -user -delstore Root "mailbackup test CA"`
+   - Linux: `sudo rm /usr/local/share/ca-certificates/mailbackup-test-ca.crt && sudo update-ca-certificates --fresh`
+   - macOS: `sudo security delete-certificate -c "mailbackup test CA" /Library/Keychains/System.keychain`
+   - `docker compose -f tests/dovecot/docker-compose.yml down`
 
 ## Variáveis de ambiente
 

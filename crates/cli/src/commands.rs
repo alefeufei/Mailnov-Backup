@@ -296,9 +296,15 @@ fn source_from(f: &Fields) -> Result<Option<Endpoint>> {
     }
 }
 
+/// Paths are stored absolute (without requiring them to exist), so running from another
+/// working directory never silently uses a second archive.
+fn absolute(p: &Path) -> Result<PathBuf> {
+    Ok(std::path::absolute(p)?)
+}
+
 fn target_from(f: &Fields) -> Result<Option<TargetSpec>> {
     if let Some(d) = &f.target_eml {
-        return Ok(Some(TargetSpec::EmlDir(d.clone())));
+        return Ok(Some(TargetSpec::EmlDir(absolute(d)?)));
     }
     if let Some(host) = &f.target_imap_host {
         return Ok(Some(TargetSpec::Imap(Endpoint {
@@ -329,14 +335,21 @@ fn profile_add(a: AddArgs, profiles: &ProfileStore, secrets: &dyn SecretStore) -
             a.name
         )));
     }
+    if let Some(other) = profiles.case_conflict(&a.name)? {
+        return Err(Error::Config(format!(
+            "profile '{other}' already exists (profile names are case-insensitive); \
+             use `profile edit {other}` or another name"
+        )));
+    }
     let f = &a.fields;
     let source = source_from(f)?.ok_or_else(|| {
         Error::Config("give either --email or --host/--user for the source".into())
     })?;
-    let archive_dir = f
-        .archive_dir
-        .clone()
-        .ok_or_else(|| Error::Config("--archive-dir is required".into()))?;
+    let archive_dir = absolute(
+        f.archive_dir
+            .as_deref()
+            .ok_or_else(|| Error::Config("--archive-dir is required".into()))?,
+    )?;
     let profile = Profile {
         name: a.name.clone(),
         archive_dir,
@@ -381,8 +394,20 @@ fn profile_add(a: AddArgs, profiles: &ProfileStore, secrets: &dyn SecretStore) -
     Ok(EXIT_OK)
 }
 
+/// After the `since` filter changed: make the existing archive (if any; never create one) list
+/// every folder from the start again, so mail outside the old filter is backfilled.
+fn reset_archive_position(p: &Profile) -> Result<bool> {
+    let dir = &p.archive_dir;
+    if !dir.join("archive.toml").is_file() || !dir.join("index.db").is_file() {
+        return Ok(false);
+    }
+    FsSqliteStore::open(dir)?.reset_last_uid(&p.name)?;
+    Ok(true)
+}
+
 fn profile_edit(e: EditArgs, profiles: &ProfileStore) -> Result<i32> {
     let mut p = profiles.load(&e.name)?;
+    let old_since = p.since.clone();
     let f = &e.fields;
     if f.email.is_some() || f.host.is_some() {
         p.source = source_from(f)?.expect("host or email present");
@@ -398,7 +423,7 @@ fn profile_edit(e: EditArgs, profiles: &ProfileStore) -> Result<i32> {
         }
     }
     if let Some(d) = &f.archive_dir {
-        p.archive_dir = d.clone();
+        p.archive_dir = absolute(d)?;
     }
     if e.clear_folders {
         p.folders = None;
@@ -443,8 +468,14 @@ fn profile_edit(e: EditArgs, profiles: &ProfileStore) -> Result<i32> {
             }
         }
     }
+    // Reset before saving: if saving then fails, the reset only costs a re-listing (UIDs
+    // already archived are never downloaded again).
+    let reset = p.since != old_since && reset_archive_position(&p)?;
     profiles.save(&p)?;
     println!("profile '{}' updated", p.name);
+    if reset {
+        println!("the 'since' filter changed: the next `archive` will also fetch older mail it does not have yet");
+    }
     if needs_target_pw {
         println!(
             "set the target password with `profile set-password {} --target`",
