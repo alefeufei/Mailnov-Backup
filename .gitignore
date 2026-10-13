@@ -1,3 +1,25 @@
-/target
-.superpowers/
-/crates/gui/gen/
+# Dados locais e arquivo de backup
+archive_data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+eml_storage/
+exports/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Arquivos de teste e exportação temporária
+*.pst
+*.eml
+*.mbox
+*.tmp

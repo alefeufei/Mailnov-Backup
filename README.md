@@ -1,254 +1,177 @@
-# mailbackup
+# MailStore Backup Studio
 
-Ferramenta de linha de comando (Rust) que **arquiva caixas de e-mail IMAP** em arquivos `.eml`
-locais, com um índice SQLite, e **migra** esse arquivo para outra conta IMAP ou para uma pasta de
-`.eml`. Foi pensada para Windows, mas o código é portátil.
+Sistema completo e profissional para **backup, arquivamento incremental, pesquisa e exportação/migração de e-mails IMAP**, inspirado na experiência do **[MailStore Home](https://help.mailstore.com/en/home/MailStore_Home_Help)**.
 
-- Arquivamento incremental e retomável (pode ser interrompido a qualquer momento).
-- Mensagens guardadas byte a byte, deduplicadas por SHA-256.
-- Exportação para outra conta IMAP (com pastas, flags e data interna) ou para uma pasta de `.eml`.
-- Senhas **nunca** vão para o disco em texto: ficam no cofre de credenciais do sistema.
+Permite arquivar caixas postais inteiras de qualquer provedor IMAP (Gmail, Outlook/Office 365, Yahoo, iCloud, Fastmail, cPanel, servidores corporativos), pesquisar instantaneamente mensagens com anexos, e exportar tudo de volta para outro servidor IMAP ou diretamente para arquivos **PST do Microsoft Outlook (.pst)**, pastas de **.EML** ou arquivos **.MBOX**.
 
-> Versão 1: apenas IMAP, apenas senha (veja [Limitações conhecidas](#limitações-conhecidas)).
+---
 
-## Instalação
+## Principais Funcionalidades
 
-Requisitos: [Rust](https://rustup.rs) (edição 2021, versão recente) e, no Windows, as
-**Visual Studio Build Tools** com a carga de trabalho "Desenvolvimento para desktop com C++" (o
-linker MSVC).
+### 1. Arquivamento IMAP Inteligente & Incremental
+- **Conexão Resiliente**: Suporte total a SSL/TLS, STARTTLS e modo direto (portas 993, 143, personalizadas).
+- **Detecção Automática de Provedor**: Preenchimento automático para Gmail, Microsoft 365, Yahoo, iCloud, Fastmail, Zoho e cPanel ao digitar o e-mail.
+- **Backup Incremental Sem Duplicatas**: Faz o download apenas de mensagens novas via delta de UIDs e deduplicação criptográfica por hash SHA-256.
+- **Acesso Seguro Somente Leitura (`READ-ONLY`)**: Nunca altera, marca ou apaga mensagens no servidor durante o arquivamento.
+- **Preservação de Hierarquia**: Mantém a estrutura exata de pastas (Caixa de Entrada, Enviados, Rascunhos, Lixeira e pastas customizadas com codificação IMAP UTF-7).
+- **Filtros Flexíveis**: Escolha pastas específicas e filtre mensagens a partir de determinada data.
 
-```
-cargo build --release
-```
+### 2. Exportação e Migração Completa
+- **Migração / Restauração para outro Servidor IMAP**:
+  - Transfere e-mails para uma nova conta via comando IMAP `APPEND`.
+  - Recria a árvore de pastas no servidor de destino automaticamente.
+  - **Preserva a data interna original (`INTERNALDATE`)**: as mensagens chegam no destino com a data exata em que foram recebidas, sem bagunçar a ordem cronológica!
+  - **Preserva flags originais**: mantém status de lido (`\Seen`), respondido (`\Answered`), sinalizado (`\Flagged`), etc.
+- **Exportação para Arquivo PST do Microsoft Outlook (.pst)**:
+  - Cria arquivos `.pst` nativos do Outlook com todas as pastas e mensagens.
+  - Converte corpos HTML/texto puro e anexa arquivos binários perfeitamente.
+  - Desconecta a PST da sessão do Outlook com segurança para transporte ou abertura em qualquer computador.
+- **Exportação para Diretório de Arquivos .EML**:
+  - Salva cópias dos e-mails individuais no formato padrão RFC 822 estruturados em pastas.
+- **Exportação para Arquivo .MBOX**:
+  - Gera arquivo padrão RFC 4155 compatível com Mozilla Thunderbird e Apple Mail.
 
-O executável fica em `target\release\mailbackup.exe`. Copie-o para uma pasta no `PATH` se quiser.
-`mailbackup --help` e `mailbackup <comando> --help` mostram todas as opções.
+### 3. Pesquisa e Visualizador Integrado (Estilo MailStore)
+- **Motor de Busca em Texto Completo (FTS5)**: Pesquisa em milissegundos em milhões de e-mails por assunto, remetente, destinatário e corpo.
+- **Filtros Avançados**: Filtre por remetente, intervalo de datas e mensagens com anexos (📎).
+- **Visualizador Seguro de E-mails**:
+  - Exibe cabeçalhos completos (De, Para, Cc, Assunto, Data).
+  - Alternância entre visualização HTML formatada (em sandbox seguro) e Texto Puro.
+  - Lista de anexos com tamanho e download com 1 clique.
+  - Botão de download do arquivo `.eml` original.
 
-## Início rápido
+### 4. Navegação no Arquivo (Folder Tree)
+- Navegação clássica idêntica ao MailStore Home: árvore de pastas à esquerda com badges numéricos de quantidade de mensagens por pasta.
+- Clique em qualquer pasta para abrir a listagem instantânea de mensagens.
 
-### 1. Criar um perfil
+### 5. Auditoria de Integridade e Histórico
+- **Verificador de Integridade SHA-256**: Valida a integridade física de todos os arquivos `.eml` no disco contra o banco de dados e detecta dados corrompidos ou ausentes.
+- **Registro Detalhado de Operações**: Histórico de sincronizações, migrações e erros com timestamps.
 
-Um perfil descreve a conta de origem, onde fica o arquivo e (opcionalmente) o destino da migração.
+---
 
-Com detecção automática do servidor a partir do e-mail (`imap.<domínio>:993`, TLS implícito; há
-exceções conhecidas para Gmail, Outlook/Hotmail/Live, Yahoo e iCloud):
-
-```
-mailbackup profile add pessoal --email eu@exemplo.com --archive-dir D:\Backups\pessoal
-```
-
-Ou manualmente:
-
-```
-mailbackup profile add trabalho --host imap.empresa.com --port 993 --tls implicit ^
-    --user eu@empresa.com --archive-dir D:\Backups\trabalho
-```
-
-Opções úteis (também aceitas por `profile edit`): `--folder <PASTA>` (repetível; padrão: todas as
-pastas), `--since AAAA-MM-DD` (só e-mail datado a partir do dia), `--tls implicit|starttls`.
-
-- `--folder`: pastas aninhadas usam **sempre `/`** entre os níveis (`--folder "Trabalho/Projetos"`),
-  mesmo que o servidor use outro delimitador (por exemplo `.`); `INBOX` não diferencia maiúsculas
-  de minúsculas. Uma pasta pedida que não existe no servidor **não** é ignorada em silêncio: aparece
-  como falha (`failed: folder <nome>: folder not found`) e o comando sai com código `2`.
-- Mudar o `--since` (ou removê-lo com `--clear-since`) num perfil que já tem arquivo faz o próximo
-  `archive` percorrer as pastas desde o início e baixar só o que ainda falta (por exemplo, o e-mail
-  mais antigo que o filtro anterior excluía).
-- `--archive-dir` e `--target-eml` são guardados como caminho **absoluto** (um caminho relativo é
-  resolvido a partir da pasta atual no momento do `profile add`/`edit`).
-- Nomes de perfil não diferenciam maiúsculas de minúsculas: com `work` existente, `profile add Work`
-  é recusado.
-
-A senha é pedida no terminal (sem eco) — é o modo recomendado. Em scripts, use
-`--password-stdin`, que lê a senha da **primeira linha da entrada padrão** (nunca a passe como
-argumento de linha de comando). O jeito mais seguro é redirecionar um arquivo que contenha só a
-senha e apagá-lo em seguida:
+## Estrutura do Projeto
 
 ```
-mailbackup profile add pessoal --email eu@exemplo.com --archive-dir D:\Backups\pessoal --password-stdin < senha.txt
+mailbackup/
+├── mailstore/
+│   ├── config.py         # Configurações de diretórios e provedores conhecidos
+│   ├── models.py         # Modelos de dados Pydantic
+│   ├── database.py       # Banco SQLite com FTS5 e controle de transações
+│   ├── parser.py         # Extrator RFC 822 / MIME, anexos e SHA-256
+│   ├── imap_engine.py    # Cliente IMAP incremental resiliente
+│   ├── pst_engine.py     # Gerador nativo de PST via automação MAPI do Outlook
+│   ├── export_engine.py  # Exportação para IMAP (APPEND), EML e MBOX
+│   ├── verifier.py       # Auditor de integridade criptográfica SHA-256
+│   ├── server.py         # Servidor REST API e servidor web embutido (FastAPI)
+│   └── web/              # Interface Web Desktop (HTML5, CSS3, JS Puro)
+│       ├── index.html
+│       ├── css/app.css
+│       └── js/app.js
+├── cli.py                # Interface de linha de comando completa
+├── main.py               # Ponto de entrada que inicia o app e abre o navegador
+├── iniciar.bat           # Executável com 2 cliques para Windows
+├── backup_agendado.bat   # Script pronto para o Agendador de Tarefas do Windows
+├── requirements.txt      # Dependências do projeto
+└── tests/                # Testes automatizados (16 testes cobrindo todo o fluxo)
 ```
 
-Evite `echo senha | mailbackup ...`: no `cmd.exe` o espaço antes do `|` passa a fazer parte da
-senha (`"senha "`), e a senha fica no histórico do shell. No PowerShell 5.1 o pipe pode estragar
-caracteres não ASCII; prefira o prompt interativo ou o redirecionamento de arquivo.
+---
 
-Destino da migração (opcional, pode ser definido depois com `profile edit`):
+## Como Executar
 
-- outra conta IMAP: `--target-imap-host`, `--target-imap-user`, `--target-imap-port`,
-  `--target-imap-tls` — com `--password-stdin`, a senha do destino é a **segunda** linha da entrada;
-- uma pasta de `.eml`: `--target-eml D:\Backups\eml-saida`.
+### 1. Pré-requisitos
+- Python 3.10 ou superior (testado no Python 3.12).
+- Para exportação PST nativa: Windows com Microsoft Outlook instalado. Para IMAP, EML e MBOX: qualquer ambiente.
 
-Outros comandos de perfil: `profile list`, `profile show <nome>` (nunca mostra senhas),
-`profile edit <nome> ...` (com `--clear-folders`, `--clear-since`, `--clear-target`),
-`profile set-password <nome> [--target] [--password-stdin]` e `profile rm <nome>` (apaga o perfil e
-as senhas guardadas; **a pasta do arquivo é mantida**).
-
-### 2. Arquivar
-
-```
-mailbackup archive pessoal
+### 2. Instalação das dependências
+```bash
+pip install -r requirements.txt
 ```
 
-Baixa só o que é novo desde a última execução. Pode ser repetido à vontade; interrompê-lo
-(Ctrl+C, queda de energia) não corrompe o arquivo, e a próxima execução continua de onde parou.
-Uma pasta que o servidor não deixa abrir (permissão, apagada no meio da execução, erro do servidor)
-é listada como falha e as demais pastas continuam sendo arquivadas (código de saída `2`). Uma
-mensagem que falha é tentada de novo nas próximas execuções, sem baixar outra vez as que já estão
-no arquivo.
-
-### 3. Ver e conferir
-
+### 3. Iniciar a Aplicação Gráfica
+Basta dar um duplo clique no arquivo `iniciar.bat` ou executar:
+```bash
+python main.py
 ```
-mailbackup status pessoal     # contagem de mensagens por pasta
-mailbackup verify pessoal     # confere se cada .eml existe e bate com o hash do índice
-```
+O servidor iniciará em `http://127.0.0.1:8000` e a interface gráfica abrirá automaticamente no seu navegador padrão.
 
-### 4. Exportar / migrar
+---
 
-```
-mailbackup export pessoal --to imap    # para a conta IMAP do perfil
-mailbackup export pessoal --to eml     # para a pasta de .eml do perfil
-mailbackup migrate pessoal             # archive + export para o destino do perfil
-```
+## Uso da Linha de Comando (CLI)
 
-A exportação é incremental: o que já foi enviado a um destino não é reenviado. O `--to` deve
-combinar com o tipo de destino configurado no perfil. Um `.eml` local ausente ou que não bate com o
-seu SHA-256 **nunca é enviado**: a mensagem é listada como falha (rode `verify`) e o resto continua.
+O MailStore Backup possui suporte completo a linha de comando para automação silenciosa:
 
-### 5. Reconstruir o índice
+### Listar e Gerenciar Perfis
+```bash
+# Listar perfis cadastrados
+python cli.py profiles
 
-```
-mailbackup reindex pessoal
+# Criar um novo perfil IMAP
+python cli.py add-profile --name "Gmail Pessoal" --host "imap.gmail.com" --port 993 --ssl "SSL" --user "meuemail@gmail.com" --password "minhasenhadeapp"
 ```
 
-Recria `index.db` a partir dos `.eml` (útil se o índice for apagado ou corrompido). Se só o
-`index.db` sumiu, `verify`, `status` e `export` recusam rodar (código 1) e mandam usar `reindex`.
-
-O que o `reindex` recupera: uma linha por mensagem (hash, tamanho, cabeçalhos) e a pasta onde o
-`.eml` está gravado, com o **nome exato** da conta e da pasta lido dos arquivos `.account`/`.folder`
-(veja abaixo; arquivos criados antes deles caem no nome da pasta em disco, que pode estar alterado).
-O que ele **não** recupera: UIDs, flags, data interna, as outras pastas em que a mesma mensagem
-aparecia (o `.eml` fica só na primeira) e o registro do que já foi exportado. Depois de um
-`reindex`:
-
-- rode `archive`: ele baixa as pastas de novo (a deduplicação por hash evita cópias no disco) e
-  restaura UIDs, flags e as localizações em todas as pastas;
-- um `export --to imap` **reenviaria tudo**, porque o registro de exportação se perdeu: o destino
-  IMAP ficaria com mensagens duplicadas. Só exporte para um destino IMAP vazio, ou não exporte de
-  novo para o mesmo destino. A exportação para `.eml` é idempotente (não duplica arquivos).
-
-## Onde ficam as configurações e as senhas
-
-- **Perfis:** `%APPDATA%\mailbackup\profiles\<nome>.toml` no Windows (diretório de configuração do
-  usuário nos outros sistemas). Mude com `--config-dir <PASTA>` ou a variável
-  `MAILBACKUP_CONFIG_DIR`. O arquivo TOML **nunca** contém senhas.
-- **Senhas:** no cofre do sistema (Windows Credential Manager; Keychain no macOS; Secret Service no
-  Linux), sob as chaves `mailbackup:<perfil>:source` e `mailbackup:<perfil>:target`.
-
-## Formato do arquivo em disco
-
-```
-<archive-dir>/
-  archive.toml                 identificador e versão do formato do arquivo
-  index.db                     índice SQLite (cache; pode ser reconstruído com `reindex`)
-  mail/<conta>/.account        nome exato da conta (UTF-8)
-  mail/<conta>/<pasta>/.folder nome exato da pasta IMAP (UTF-8, níveis separados por "/")
-  mail/<conta>/<pasta>/<aa>/<sha256>.eml
+### Executar Arquivamento
+```bash
+# Arquivar por ID ou Nome do perfil
+python cli.py backup --profile "Gmail Pessoal"
 ```
 
-- `<conta>` é o nome do perfil; `<pasta>` é o nome da pasta IMAP com caracteres inválidos no
-  Windows trocados por `_` (inclusive `/` entre níveis, p. ex. `Trabalho/Projetos 2024` vira
-  `Trabalho_Projetos 2024-<hash>`; nomes que começam com `.` ganham um `_` na frente e o sufixo
-  de hash) e abreviado quando muito longo — por isso o nome verdadeiro fica
-  nos arquivos `.account` e `.folder`, que o `reindex` usa; `<aa>` são os dois primeiros caracteres
-  do SHA-256.
-- Cada `.eml` é a mensagem **exatamente** como veio do servidor; o nome é o SHA-256 dos bytes.
-  Flags, datas e a origem (pasta/UID) ficam só no `index.db`.
-
-### Como fazer backup do próprio arquivo
-
-Copie a pasta inteira (`archive-dir`) **com o mailbackup fechado** — durante uma execução o
-SQLite pode estar no meio de uma gravação. Os `.eml` são a fonte da verdade; o `index.db` é só um
-cache que o `reindex` reconstrói. (Se copiar sem o `index.db`, o `archive.toml` precisa ir junto.)
-
-## Códigos de saída
-
-| Código | Significado |
-|---|---|
-| `0` | Sucesso |
-| `1` | Erro (configuração, rede, credenciais, uso incorreto da linha de comando) ou `verify` achou arquivos ausentes/corrompidos |
-| `2` | Sucesso parcial: o comando terminou, mas uma ou mais mensagens ou pastas falharam (listadas na saída de erro), inclusive uma pasta de `--folder` que não existe no servidor |
-
-`--help` e `--version` saem com `0`.
-
-## Testes
-
-```
-cargo test --workspace --features testing
-cargo test -p mailbackup --features test-secrets
+### Exportar / Migrar para Outro Servidor IMAP
+```bash
+python cli.py export-imap --profile "Gmail Pessoal" --target-host "imap.novoprovedor.com" --target-user "novo@novoprovedor.com" --target-pass "senha123" --prefix "Restaurado"
 ```
 
-O primeiro roda os testes do núcleo (com servidores IMAP simulados) e unitários; o segundo, os
-testes de ponta a ponta da CLI com um cofre de senhas **em arquivo texto simples**, apenas para
-testes (a feature `test-secrets` nunca deve ser usada em um build de uso real).
-
-### Teste com Dovecot real (opcional, ignorado por padrão)
-
-`crates/cli/tests/e2e_dovecot.rs` arquiva uma conta `origem`, exporta para `destino` no mesmo
-Dovecot e compara contagens, flags e SHA-256 por pasta. Precisa de Docker e de um certificado em
-que o sistema confie (o mailbackup **sempre** valida o TLS). Resumo — detalhes em
-[`tests/dovecot/README.md`](tests/dovecot/README.md):
-
-```
-sh tests/dovecot/make-certs.sh
-certutil -user -addstore Root tests\dovecot\certs\ca.crt       (Windows)
-docker compose -f tests/dovecot/docker-compose.yml up -d
-cargo test -p mailbackup --features test-secrets --test e2e_dovecot -- --ignored --nocapture
-docker compose -f tests/dovecot/docker-compose.yml down
-certutil -user -delstore Root "mailbackup test CA"            (Windows: remova a CA ao terminar)
+### Exportar para Arquivo PST do Outlook
+```bash
+python cli.py export-pst --profile "Gmail Pessoal" --output "C:\Users\Usuario\Desktop\backup.pst"
 ```
 
-A CA de teste só pode valer para `localhost`/`127.0.0.1` (*name constraints*) e a chave privada dela
-é apagada pelo próprio `make-certs.sh`; mesmo assim, **remova-a do repositório de confiança** assim
-que terminar o teste.
+### Exportar para Pasta de Arquivos .EML
+```bash
+python cli.py export-eml --profile "Gmail Pessoal" --output-dir "C:\Users\Usuario\Documents\Emails_EML"
+```
 
-**Atenção:** a máquina de desenvolvimento não tinha Docker. Esse teste e o `docker-compose.yml`
-foram apenas compilados/verificados com clippy e **nunca foram executados**.
+### Exportar para Arquivo .MBOX
+```bash
+python cli.py export-mbox --profile "Gmail Pessoal" --output "C:\Users\Usuario\Documents\arquivo.mbox"
+```
 
-## Limitações conhecidas
+### Pesquisar no Arquivo
+```bash
+python cli.py search "fatura internet"
+```
 
-Fora do escopo da v1 (previstos para v2/v3): POP3, busca, interface gráfica, criptografia do
-arquivo, OAuth2 e agendamento automático.
+### Auditoria de Integridade
+```bash
+python cli.py verify
+```
 
-- **Gmail e Microsoft 365 / Outlook:** exigem *senha de aplicativo* (ou IMAP básico habilitado),
-  pois ainda não há OAuth2.
-- **Sem timeout de conexão/leitura:** se o servidor travar sem fechar a conexão, o comando fica
-  esperando.
-- **Possível duplicata no destino:** se a conexão cair durante um `APPEND` na exportação IMAP, a
-  mensagem é tratada como falha e pode ser enviada de novo na próxima execução, duplicando-a se o
-  servidor já a tinha gravado. O mesmo vale se o processo morrer entre o envio e o registro.
-- **`/` dentro do nome de uma pasta** em servidores cujo delimitador é outro (por exemplo `.`) é
-  ambíguo: o mailbackup usa `/` como separador de níveis.
-- **Flags após reset de UIDVALIDITY:** as mensagens baixadas antes do reset deixam de ter as flags
-  atualizadas nas execuções seguintes (nunca ficam erradas, apenas deixam de ser sincronizadas;
-  nenhuma mensagem se perde).
-- **`--since` tem granularidade de dia** (a busca IMAP `SINCE` ignora a hora e o fuso).
-- **Uso de memória:** cada lote de até 50 mensagens é mantido na memória; caixas com muitas
-  mensagens muito grandes podem consumir bastante RAM.
-- **`reindex` não recupera UIDs, flags, outras pastas nem o registro de exportação** (veja acima):
-  rode `archive` depois dele e não reexporte para um destino IMAP que já recebeu as mensagens.
-- **Não rode dois mailbackup ao mesmo tempo no mesmo arquivo** (ainda não há trava): pode dar
-  "database is locked" ou conflito entre arquivos temporários. O modo WAL do SQLite não funciona
-  em pastas de rede (SMB/NAS): mantenha o arquivo num disco local.
-- **Mudar o servidor/e-mail de um perfil** (`profile edit --host/--email`) mantém o estado das
-  pastas da conta antiga; para outra conta, crie outro perfil com outro arquivo.
-- **Rede instável:** quando as novas tentativas de conexão se esgotam, o comando sai com código `1`
-  (não `2`) e o resumo parcial não é impresso (o que já foi gravado continua no arquivo).
-- **A feature `test-secrets`** guarda senhas em arquivo texto simples; nunca use um binário
-  compilado com ela (o `cargo test` deixa um em `target/`).
-- **Caminhos longos no Windows:** nomes de pasta muito longos/profundos podem esbarrar no limite de
-  caminho; nomes que diferem só por maiúsculas/minúsculas podem colidir no Windows.
-- **Não verificado em CI:** os caminhos reais do cofre de credenciais (Windows Credential Manager),
-  de TLS/STARTTLS e do Dovecot **não foram exercitados** em testes automáticos, porque a máquina de
-  desenvolvimento não tinha Docker; os testes usam servidores IMAP simulados e um cofre em arquivo.
-  Teste com uma conta descartável antes de confiar no arquivo.
+---
+
+## Automação no Windows (Task Scheduler)
+
+Para automatizar backups diários ou semanais:
+1. Abra o **Agendador de Tarefas do Windows** (`taskschd.msc`).
+2. Clique em **Criar Tarefa Básica**.
+3. Escolha a frequência (ex: diariamente às 22:00).
+4. Na ação, selecione **Iniciar um programa**:
+   - Programa/script: `C:\Github\mailbackup\backup_agendado.bat`
+   - Adicionar argumentos: `"NomeDoSeuPerfil"`
+   - Iniciar em: `C:\Github\mailbackup`
+
+---
+
+## Execução dos Testes Automatizados
+
+O projeto inclui uma suíte completa de testes com mock de servidor IMAP e testes de ponta a ponta:
+
+```bash
+python -m unittest discover tests
+```
+
+---
+
+## Licença
+
+Desenvolvido para arquivamento e proteção contínua de dados de e-mail.

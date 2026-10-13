@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MailStore Backup Studio</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Barra Lateral (Sidebar) -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="logo-icon">M</div>
+        <div>
+          <div class="app-title">MailStore Backup</div>
+          <div class="app-version">Versão 1.0 • Desktop</div>
+        </div>
+      </div>
+
+      <ul class="sidebar-nav">
+        <li class="nav-item">
+          <a class="nav-link active" data-tab="tab-dashboard">
+            <span class="icon">🏠</span>
+            <span>Início</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" data-tab="tab-archive">
+            <span class="icon">📥</span>
+            <span>Arquivar E-mails</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" data-tab="tab-search">
+            <span class="icon">🔍</span>
+            <span>Pesquisar E-mails</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" data-tab="tab-browse">
+            <span class="icon">📁</span>
+            <span>Navegar no Arquivo</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" data-tab="tab-export">
+            <span class="icon">📤</span>
+            <span>Exportar E-mails</span>
+          </a>
+        </li>
+        <li class="nav-item">
+          <a class="nav-link" data-tab="tab-tools">
+            <span class="icon">🛠️</span>
+            <span>Ferramentas & Auditoria</span>
+          </a>
+        </li>
+      </ul>
+
+      <div class="sidebar-footer">
+        <div class="sidebar-status-badge">
+          <span class="status-dot" id="system-status-dot"></span>
+          <span id="system-status-text">Pronto</span>
+        </div>
+        <div id="sidebar-pst-status" style="font-size: 11px; color: #94a3b8; margin-top: 4px;">PST: Verificando...</div>
+      </div>
+    </aside>
+
+    <!-- Área de Conteúdo Principal -->
+    <main class="main-wrapper">
+      <header class="topbar">
+        <div class="topbar-title" id="page-title">Início - Visão Geral do Arquivo</div>
+        <div class="topbar-actions">
+          <button class="btn btn-primary btn-sm" id="btn-quick-backup" onclick="openProfileModal()">
+            <span>+ Novo Backup IMAP</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="content-area">
+        <!-- 1. ABA DASHBOARD -->
+        <section id="tab-dashboard" class="tab-content active">
+          <div class="metrics-grid">
+            <div class="metric-card">
+              <div class="metric-header">
+                <span class="metric-label">Total de E-mails Arquivados</span>
+                <span class="metric-icon">✉️</span>
+              </div>
+              <div class="metric-value" id="dash-total-msgs">0</div>
+              <div class="metric-sub" id="dash-folders-count">0 pastas indexadas</div>
+            </div>
+
+            <div class="metric-card">
+              <div class="metric-header">
+                <span class="metric-label">Espaço Utilizado</span>
+                <span class="metric-icon">💾</span>
+              </div>
+              <div class="metric-value" id="dash-total-size">0 MB</div>
+              <div class="metric-sub">Armazenamento RFC 822 puro</div>
+            </div>
+
+            <div class="metric-card">
+              <div class="metric-header">
+                <span class="metric-label">Caixas Postais / Perfis</span>
+                <span class="metric-icon">📫</span>
+              </div>
+              <div class="metric-value" id="dash-total-profiles">0</div>
+              <div class="metric-sub">Servidores configurados</div>
+            </div>
+
+            <div class="metric-card">
+              <div class="metric-header">
+                <span class="metric-label">Status da Automação PST</span>
+                <span class="metric-icon">📑</span>
+              </div>
+              <div class="metric-value" id="dash-pst-badge" style="font-size: 20px; color: var(--success);">Disponível</div>
+              <div class="metric-sub" id="dash-pst-desc">Exportação nativa Outlook</div>
+            </div>
+          </div>
+
+          <div class="quick-actions-card">
+            <div class="section-title">Ações Rápidas</div>
+            <div class="quick-action-buttons">
+              <div class="quick-btn" onclick="navigateTo('tab-archive')">
+                <span class="btn-title">📥 Arquivar Nova Conta</span>
+                <span class="btn-desc">Conectar caixa postal IMAP e baixar e-mails com segurança.</span>
+              </div>
+              <div class="quick-btn" onclick="navigateTo('tab-export')">
+                <span class="btn-title">📤 Exportar / Migrar E-mails</span>
+                <span class="btn-desc">Transferir para outro servidor IMAP ou salvar em arquivo .PST.</span>
+              </div>
+              <div class="quick-btn" onclick="navigateTo('tab-search')">
+                <span class="btn-title">🔍 Pesquisar em Todo o Arquivo</span>
+                <span class="btn-desc">Localização instantânea por assunto, remetente ou anexo.</span>
+              </div>
+              <div class="quick-btn" onclick="navigateTo('tab-browse')">
+                <span class="btn-title">📁 Explorar Pastas</span>
+                <span class="btn-desc">Navegue pelas pastas e mensagens arquivadas.</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Histórico Recente -->
+          <div class="table-container">
+            <div style="padding: 14px 18px; font-weight: 600; border-bottom: 1px solid var(--border);">
+              Últimas Execuções de Sincronização
+            </div>
+            <table class="table-mailstore">
+              <thead>
+                <tr>
+                  <th>Data/Hora</th>
+                  <th>Ação</th>
+                  <th>Conta / Destino</th>
+                  <th>Status</th>
+                  <th>Mensagens</th>
+                  <th>Erros</th>
+                </tr>
+              </thead>
+              <tbody id="dash-logs-tbody">
+                <tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 20px;">Nenhuma sincronização registrada.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 2. ABA ARQUIVAR E-MAILS -->
+        <section id="tab-archive" class="tab-content">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px;">
+            <div>
+              <h2 style="font-size: 18px; font-weight: 600;">Perfis de Arquivamento IMAP</h2>
+              <p style="font-size: 13px; color: var(--text-muted);">Configure e execute backups incrementais das suas contas de e-mail.</p>
+            </div>
+            <button class="btn btn-primary" onclick="openProfileModal()">+ Adicionar Perfil IMAP</button>
+          </div>
+
+          <div class="table-container">
+            <table class="table-mailstore">
+              <thead>
+                <tr>
+                  <th>Nome do Perfil</th>
+                  <th>Servidor / Usuário</th>
+                  <th>Último Arquivamento</th>
+                  <th>Status</th>
+                  <th>Mensagens</th>
+                  <th>Tamanho</th>
+                  <th style="text-align: right;">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="profiles-tbody">
+                <tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 20px;">Carregando perfis...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 3. ABA PESQUISAR E-MAILS -->
+        <section id="tab-search" class="tab-content">
+          <div style="background: #ffffff; border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 18px;">
+            <div style="display: flex; gap: 12px; margin-bottom: 14px;">
+              <input type="text" id="search-input" class="form-control" placeholder="Buscar por qualquer palavra no assunto, remetente ou corpo do e-mail..." style="flex: 1; font-size: 14px;">
+              <button class="btn btn-primary" onclick="executeSearch()">🔍 Pesquisar</button>
+              <button class="btn btn-secondary" onclick="toggleAdvancedSearch()">Filtros Avançados</button>
+            </div>
+
+            <!-- Filtros Avançados Opcionais -->
+            <div id="search-advanced-filters" style="display: none; padding-top: 14px; border-top: 1px solid var(--border);">
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label">De (Remetente):</label>
+                  <input type="text" id="filter-sender" class="form-control" placeholder="ex: contato@empresa.com">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Para (Destinatário):</label>
+                  <input type="text" id="filter-recipient" class="form-control" placeholder="ex: eu@email.com">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Assunto:</label>
+                  <input type="text" id="filter-subject" class="form-control">
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label">Data a partir de:</label>
+                  <input type="date" id="filter-date-from" class="form-control">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Data até:</label>
+                  <input type="date" id="filter-date-to" class="form-control">
+                </div>
+                <div class="form-group" style="display: flex; align-items: center; margin-top: 24px;">
+                  <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
+                    <input type="checkbox" id="filter-has-attachment">
+                    Somente mensagens com anexo 📎
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tabela de Resultados -->
+          <div class="table-container">
+            <div style="padding: 12px 18px; font-size: 13px; color: var(--text-muted); display: flex; justify-content: space-between;" id="search-results-info">
+              <span>Nenhuma busca realizada.</span>
+            </div>
+            <table class="table-mailstore">
+              <thead>
+                <tr>
+                  <th style="width: 30px;">📎</th>
+                  <th>Data</th>
+                  <th>De</th>
+                  <th>Para</th>
+                  <th>Assunto</th>
+                  <th>Pasta</th>
+                  <th>Tamanho</th>
+                </tr>
+              </thead>
+              <tbody id="search-results-tbody">
+                <tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 30px;">Digite um termo acima para pesquisar.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- 4. ABA NAVEGAR NO ARQUIVO (FOLDER TREE) -->
+        <section id="tab-browse" class="tab-content">
+          <div class="split-view-container">
+            <!-- Árvore de Pastas -->
+            <div class="tree-sidebar">
+              <div style="font-weight: 600; font-size: 14px; margin-bottom: 10px; color: var(--text-main);">
+                Pastas Arquivadas
+              </div>
+              <div id="folders-tree-list">
+                <div style="color: var(--text-muted); font-size: 12px;">Carregando pastas...</div>
+              </div>
+            </div>
+
+            <!-- Lista de E-mails da Pasta Selecionada -->
+            <div class="split-detail-area">
+              <div style="padding: 12px 18px; border-bottom: 1px solid var(--border); font-weight: 600; display: flex; justify-content: space-between; align-items: center;" id="browse-folder-header">
+                <span>Selecione uma pasta ao lado</span>
+                <span id="browse-folder-count" style="font-size: 12px; color: var(--text-muted);"></span>
+              </div>
+              <div style="flex: 1; overflow-y: auto;">
+                <table class="table-mailstore">
+                  <thead>
+                    <tr>
+                      <th style="width: 30px;">📎</th>
+                      <th>Data</th>
+                      <th>De</th>
+                      <th>Assunto</th>
+                      <th>Tamanho</th>
+                    </tr>
+                  </thead>
+                  <tbody id="browse-messages-tbody">
+                    <tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 40px;">Selecione uma pasta para ver os e-mails.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 5. ABA EXPORTAR E-MAILS -->
+        <section id="tab-export" class="tab-content">
+          <div style="margin-bottom: 18px;">
+            <h2 style="font-size: 18px; font-weight: 600;">Exportar / Migrar E-mails</h2>
+            <p style="font-size: 13px; color: var(--text-muted);">Exporte seu arquivo para outro servidor IMAP ou para formatos de arquivo locais.</p>
+          </div>
+
+          <!-- Seleção de Formato -->
+          <div class="export-cards-grid">
+            <div class="export-card selected" id="card-exp-imap" onclick="selectExportTarget('imap')">
+              <div class="export-icon">🌐</div>
+              <div class="export-name">Outro Servidor IMAP</div>
+              <div class="export-desc">Restaura ou migra e-mails para outra conta preservando pastas, flags e datas originais.</div>
+            </div>
+
+            <div class="export-card" id="card-exp-pst" onclick="selectExportTarget('pst')">
+              <div class="export-icon">📑</div>
+              <div class="export-name">Arquivo Microsoft Outlook (.PST)</div>
+              <div class="export-desc">Gera um arquivo PST nativo do Outlook com toda a estrutura de pastas e mensagens.</div>
+            </div>
+
+            <div class="export-card" id="card-exp-eml" onclick="selectExportTarget('eml')">
+              <div class="export-icon">📁</div>
+              <div class="export-name">Diretório de Arquivos .EML</div>
+              <div class="export-desc">Exporta e-mails individuais organizados por pastas em disco no formato padrão RFC 822.</div>
+            </div>
+
+            <div class="export-card" id="card-exp-mbox" onclick="selectExportTarget('mbox')">
+              <div class="export-icon">📦</div>
+              <div class="export-name">Arquivo .MBOX</div>
+              <div class="export-desc">Formato universal compatível com Mozilla Thunderbird e Apple Mail.</div>
+            </div>
+          </div>
+
+          <!-- Formulário Dinâmico de Exportação -->
+          <div class="quick-actions-card">
+            <!-- Seleção de Origem -->
+            <div class="form-row" style="margin-bottom: 16px;">
+              <div class="form-group">
+                <label class="form-label">Conta a Exportar:</label>
+                <select id="export-source-profile" class="form-control" onchange="loadFoldersForExport()">
+                  <option value="">Todas as contas</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Pasta Específica (Opcional):</label>
+                <select id="export-source-folder" class="form-control">
+                  <option value="">Todas as pastas</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Campos: IMAP -->
+            <div id="export-fields-imap">
+              <div class="section-title">Parâmetros do Servidor IMAP de Destino</div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label">Servidor IMAP Destino:</label>
+                  <input type="text" id="dest-imap-host" class="form-control" placeholder="imap.novoprovedor.com">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Porta:</label>
+                  <input type="number" id="dest-imap-port" class="form-control" value="993">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Segurança:</label>
+                  <select id="dest-imap-ssl" class="form-control">
+                    <option value="SSL">SSL / TLS</option>
+                    <option value="STARTTLS">STARTTLS</option>
+                    <option value="PLAIN">Sem criptografia (Inseguro)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label class="form-label">E-mail / Usuário Destino:</label>
+                  <input type="text" id="dest-imap-user" class="form-control" placeholder="usuario@novoprovedor.com">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Senha:</label>
+                  <input type="password" id="dest-imap-pass" class="form-control">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Prefixo da Pasta Destino (Opcional):</label>
+                  <input type="text" id="dest-imap-prefix" class="form-control" placeholder="ex: Restaurado_MailStore">
+                </div>
+              </div>
+            </div>
+
+            <!-- Campos: PST -->
+            <div id="export-fields-pst" style="display: none;">
+              <div class="section-title">Configurações de Exportação PST do Outlook</div>
+              <div class="form-group">
+                <label class="form-label">Caminho do Arquivo PST de Saída:</label>
+                <input type="text" id="dest-pst-path" class="form-control" placeholder="C:\Users\...\Desktop\meu_backup.pst">
+                <small style="color: var(--text-muted); font-size: 11px;">O arquivo será criado com formato Unicode compatível com todas as versões do Microsoft Outlook.</small>
+              </div>
+            </div>
+
+            <!-- Campos: EML -->
+            <div id="export-fields-eml" style="display: none;">
+              <div class="section-title">Diretório de Exportação EML</div>
+              <div class="form-group">
+                <label class="form-label">Diretório no Disco:</label>
+                <input type="text" id="dest-eml-dir" class="form-control" placeholder="C:\Users\...\Documents\Exportacao_EML">
+              </div>
+            </div>
+
+            <!-- Campos: MBOX -->
+            <div id="export-fields-mbox" style="display: none;">
+              <div class="section-title">Arquivo de Saída MBOX</div>
+              <div class="form-group">
+                <label class="form-label">Caminho do Arquivo .mbox:</label>
+                <input type="text" id="dest-mbox-path" class="form-control" placeholder="C:\Users\...\Documents\emails.mbox">
+              </div>
+            </div>
+
+            <div style="margin-top: 18px; display: flex; gap: 12px;">
+              <button class="btn btn-primary" onclick="startExport()">Iniciar Exportação</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 6. ABA FERRAMENTAS & AUDITORIA -->
+        <section id="tab-tools" class="tab-content">
+          <div class="quick-actions-card">
+            <div class="section-title">Auditoria e Verificação de Integridade (SHA-256)</div>
+            <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px;">
+              Assim como no MailStore Home, esta ferramenta percorre todas as mensagens arquivadas e compara os hashes criptográficos gravados no banco de dados contra os arquivos físicos em disco.
+            </p>
+            <button class="btn btn-primary" onclick="runIntegrityAudit()">Executar Auditoria de Integridade</button>
+
+            <div id="audit-result-box" style="margin-top: 16px; display: none;">
+              <div class="metrics-grid">
+                <div class="metric-card">
+                  <div class="metric-label">Verificados</div>
+                  <div class="metric-value" id="audit-checked">0</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-label">Íntegros (100% OK)</div>
+                  <div class="metric-value" style="color: var(--success);" id="audit-valid">0</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-label">Arquivos Ausentes</div>
+                  <div class="metric-value" style="color: var(--danger);" id="audit-missing">0</div>
+                </div>
+                <div class="metric-card">
+                  <div class="metric-label">Corrompidos / Modificados</div>
+                  <div class="metric-value" style="color: var(--warning);" id="audit-corrupt">0</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Histórico Completo de Logs -->
+          <div class="table-container">
+            <div style="padding: 14px 18px; font-weight: 600; border-bottom: 1px solid var(--border);">
+              Registro de Operações (Logs)
+            </div>
+            <table class="table-mailstore">
+              <thead>
+                <tr>
+                  <th>Data/Hora</th>
+                  <th>Operação</th>
+                  <th>Conta</th>
+                  <th>Status</th>
+                  <th>Mensagens</th>
+                  <th>Detalhes</th>
+                </tr>
+              </thead>
+              <tbody id="full-logs-tbody">
+                <tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 20px;">Carregando logs...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <!-- MODAL: Adicionar / Editar Perfil IMAP -->
+  <div class="modal-overlay" id="modal-profile">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title" id="modal-profile-title">Configurar Perfil de Arquivamento IMAP</div>
+        <button class="modal-close" onclick="closeProfileModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="prof-id">
+
+        <div class="form-group">
+          <label class="form-label">Nome do Perfil:</label>
+          <input type="text" id="prof-name" class="form-control" placeholder="ex: Meu Gmail Pessoal">
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">E-mail / Usuário:</label>
+            <input type="email" id="prof-user" class="form-control" placeholder="usuario@exemplo.com" onblur="autoDetectSettings()">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Senha / Senha de Aplicativo:</label>
+            <input type="password" id="prof-pass" class="form-control" placeholder="Senha do e-mail">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Servidor IMAP (Host):</label>
+            <input type="text" id="prof-host" class="form-control" placeholder="imap.exemplo.com">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Porta:</label>
+            <input type="number" id="prof-port" class="form-control" value="993">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Criptografia:</label>
+            <select id="prof-ssl" class="form-control">
+              <option value="SSL">SSL / TLS</option>
+              <option value="STARTTLS">STARTTLS</option>
+              <option value="PLAIN">Sem criptografia</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-bottom: 16px;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="testCurrentConnection()">
+            🔌 Testar Conexão e Descobrir Pastas
+          </button>
+          <span id="test-conn-feedback" style="font-size: 12px; display: flex; align-items: center;"></span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Pastas a Arquivar (Opcional - deixe vazio para todas):</label>
+          <div id="prof-folders-checklist" style="max-height: 120px; overflow-y: auto; border: 1px solid var(--border); padding: 8px; border-radius: 6px; font-size: 13px; background: #fafafa;">
+            <span style="color: var(--text-muted);">Clique em 'Testar Conexão' para listar pastas disponíveis no servidor.</span>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Filtro de Data (Arquivar apenas e-mails a partir de):</label>
+          <input type="date" id="prof-since-date" class="form-control">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeProfileModal()">Cancelar</button>
+        <button class="btn btn-primary" onclick="saveProfileAndOptionallyRun(false)">Salvar Perfil</button>
+        <button class="btn btn-success" onclick="saveProfileAndOptionallyRun(true)">Salvar e Arquivar Agora</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Progresso ao Vivo de Backup / Exportação -->
+  <div class="modal-overlay" id="modal-progress">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title" id="progress-modal-title">Operação em Andamento</div>
+      </div>
+      <div class="modal-body">
+        <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: 500; margin-bottom: 4px;">
+          <span id="progress-status-desc">Processando mensagens...</span>
+          <span id="progress-percent-label">0%</span>
+        </div>
+
+        <div class="progress-container">
+          <div class="progress-bar-fill" id="progress-bar-fill"></div>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">
+          <span id="progress-details-current">Pasta: -</span>
+          <span id="progress-speed">0 msgs/s</span>
+        </div>
+
+        <div class="log-terminal" id="progress-log-terminal"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-danger btn-sm" id="btn-cancel-job" onclick="cancelCurrentJob()">Cancelar Operação</button>
+        <button class="btn btn-secondary btn-sm" id="btn-close-progress" style="display: none;" onclick="closeProgressModal()">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Leitura Completa de Mensagem -->
+  <div class="modal-overlay" id="modal-viewer">
+    <div class="modal-box" style="max-width: 850px; height: 85vh;">
+      <div class="modal-header">
+        <div class="modal-title" id="viewer-subject-title">Visualizador de E-mail</div>
+        <button class="modal-close" onclick="closeViewerModal()">&times;</button>
+      </div>
+      <div class="mail-viewer-header">
+        <div class="mail-viewer-subject" id="viewer-subject">(Sem assunto)</div>
+        <div class="mail-viewer-meta">
+          <div><strong>De:</strong> <span id="viewer-from"></span></div>
+          <div><strong>Para:</strong> <span id="viewer-to"></span></div>
+          <div id="viewer-cc-row" style="display: none;"><strong>Cc:</strong> <span id="viewer-cc"></span></div>
+          <div><strong>Data:</strong> <span id="viewer-date"></span> | <strong>Pasta:</strong> <span id="viewer-folder"></span></div>
+        </div>
+        <div class="mail-attachments-box" id="viewer-attachments-box" style="display: none;"></div>
+      </div>
+
+      <div class="mail-viewer-tabs">
+        <div class="mail-viewer-tab active" id="tab-btn-html" onclick="switchViewerTab('html')">Visualização Formatada (HTML)</div>
+        <div class="mail-viewer-tab" id="tab-btn-text" onclick="switchViewerTab('text')">Texto Puro</div>
+      </div>
+
+      <div class="mail-viewer-body" id="viewer-body-container">
+        <iframe id="viewer-html-frame" sandbox="allow-same-origin" style="width: 100%; height: 100%; border: none;"></iframe>
+        <pre id="viewer-text-pre" style="white-space: pre-wrap; font-family: inherit; font-size: 13px; display: none;"></pre>
+      </div>
+
+      <div class="modal-footer" style="justify-content: space-between;">
+        <button class="btn btn-secondary btn-sm" id="btn-download-eml">📥 Baixar .EML Original</button>
+        <button class="btn btn-primary btn-sm" onclick="closeViewerModal()">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
