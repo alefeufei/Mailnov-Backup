@@ -527,3 +527,10 @@ if WEB_DIR.exists():
         if index_file.exists():
             return HTMLResponse(content=index_file.read_text(encoding="utf-8"))
         return HTMLResponse("<h1>Mailnov Backup</h1><p>Frontend não encontrado.</p>")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    def serve_favicon():
+        ico_file = WEB_DIR / "favicon.ico"
+        if ico_file.exists():
+            return FileResponse(ico_file, media_type="image/x-icon")
+        return Response(status_code=404)
