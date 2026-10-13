@@ -268,3 +268,145 @@ fn retry_of_same_batch_is_idempotent() {
     s.commit_batch("me", "INBOX", 1, &batch, 2).unwrap();
     assert_eq!(s.messages("me").unwrap().len(), 2);
 }
+
+#[test]
+fn reset_last_uid_zeroes_only_that_account_and_keeps_uidvalidity() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = FsSqliteStore::open(dir.path()).unwrap();
+    s.commit_batch("me", "INBOX", 7, &[raw(5, 1)], 5).unwrap();
+    s.commit_batch("me", "Sent", 8, &[raw(3, 2)], 3).unwrap();
+    s.commit_batch("other", "INBOX", 9, &[raw(4, 3)], 4)
+        .unwrap();
+    s.reset_last_uid("me").unwrap();
+    assert_eq!(
+        s.folder_state("me", "INBOX").unwrap(),
+        Some(StoredFolder {
+            uidvalidity: 7,
+            last_uid: 0
+        })
+    );
+    assert_eq!(
+        s.folder_state("me", "Sent").unwrap(),
+        Some(StoredFolder {
+            uidvalidity: 8,
+            last_uid: 0
+        })
+    );
+    assert_eq!(
+        s.folder_state("other", "INBOX").unwrap(),
+        Some(StoredFolder {
+            uidvalidity: 9,
+            last_uid: 4
+        })
+    );
+    assert_eq!(s.messages("me").unwrap().len(), 2);
+    // unknown account: nothing to do
+    s.reset_last_uid("nobody").unwrap();
+}
+
+#[test]
+fn read_eml_reports_missing_and_tampered_files_as_corrupt() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = FsSqliteStore::open(dir.path()).unwrap();
+    s.commit_batch("me", "INBOX", 1, &[raw(1, 1), raw(2, 2)], 2)
+        .unwrap();
+    let sha1 = sha256_hex(&eml(1));
+    let sha2 = sha256_hex(&eml(2));
+    std::fs::remove_file(dir.path().join(eml_relpath("me", "INBOX", &sha1))).unwrap();
+    let mut flipped = eml(2);
+    flipped[0] ^= 0x01;
+    std::fs::write(dir.path().join(eml_relpath("me", "INBOX", &sha2)), flipped).unwrap();
+    match s.read_eml(&sha1) {
+        Err(Error::Corrupt(m)) => assert!(m.contains(&sha1), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    match s.read_eml(&sha2) {
+        Err(Error::Corrupt(m)) => assert!(m.contains(&sha2), "{m}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+fn wipe_index(root: &Path) {
+    for f in ["index.db", "index.db-wal", "index.db-shm"] {
+        let _ = std::fs::remove_file(root.join(f));
+    }
+}
+
+const ODD_FOLDERS: [&str; 5] = [
+    "INBOX",
+    "Trabalho/Projetos 2024",
+    "Álbum de Fotos",
+    "a:b?c",
+    "Pai/Filho/Neto. ",
+];
+
+#[test]
+fn reindex_recovers_exact_folder_and_account_names_from_sidecars() {
+    let dir = tempfile::tempdir().unwrap();
+    let account = "conta:1/x";
+    {
+        let mut s = FsSqliteStore::open(dir.path()).unwrap();
+        for (i, f) in ODD_FOLDERS.iter().enumerate() {
+            s.commit_batch(account, f, 1, &[raw(1, i as u32 + 1)], 1)
+                .unwrap();
+        }
+        // a duplicate in another folder writes no file there
+        s.commit_batch(account, "Dup", 1, &[raw(9, 1)], 9).unwrap();
+    }
+    wipe_index(dir.path());
+    let mut s = FsSqliteStore::open(dir.path()).unwrap();
+    assert_eq!(s.reindex().unwrap(), ODD_FOLDERS.len());
+    let mut got: Vec<String> = s
+        .messages(account)
+        .unwrap()
+        .into_iter()
+        .map(|m| m.folder)
+        .collect();
+    got.sort();
+    let mut want: Vec<String> = ODD_FOLDERS.iter().map(|s| s.to_string()).collect();
+    want.sort();
+    assert_eq!(got, want);
+    // the sidecars are never mistaken for messages
+    assert_eq!(s.verify().unwrap().checked, ODD_FOLDERS.len());
+}
+
+#[test]
+fn reindex_of_a_legacy_archive_without_sidecars_uses_directory_names() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut s = FsSqliteStore::open(dir.path()).unwrap();
+        s.commit_batch("me", "INBOX", 1, &[raw(1, 1)], 1).unwrap();
+        s.commit_batch("me", "a:b", 1, &[raw(1, 2)], 1).unwrap();
+    }
+    wipe_index(dir.path());
+    fn strip(d: &Path) {
+        for e in std::fs::read_dir(d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                strip(&p);
+            } else if p
+                .file_name()
+                .is_some_and(|n| n == ".folder" || n == ".account")
+            {
+                std::fs::remove_file(p).unwrap();
+            }
+        }
+    }
+    strip(&dir.path().join("mail"));
+    let mut s = FsSqliteStore::open(dir.path()).unwrap();
+    assert_eq!(s.reindex().unwrap(), 2);
+    let mut got: Vec<String> = s
+        .messages("me")
+        .unwrap()
+        .into_iter()
+        .map(|m| m.folder)
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            "INBOX".to_string(),
+            crate::store::paths::safe_component("a:b")
+        ]
+    );
+}

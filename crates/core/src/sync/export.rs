@@ -28,7 +28,9 @@ fn is_systemic(e: &Error) -> bool {
 /// Per-message and per-folder failures are reported (`MessageFailed`, counted in `failed`) and
 /// the run goes on. It stops with an error only for a rejected login (`Error::Auth`, at once) or
 /// after 3 consecutive connection-level failures (`Error::Connection`/`Io`); `Finished` is
-/// emitted before returning that error so the progress made is not lost.
+/// emitted before returning that error so the progress made is not lost. A local `.eml` that is
+/// missing or does not match its hash is `Error::Corrupt`: that message fails, is never sent, and
+/// the run goes on.
 pub fn export(
     store: &mut dyn Store,
     target: &mut dyn MailTarget,

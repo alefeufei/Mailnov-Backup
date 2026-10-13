@@ -57,6 +57,8 @@ pub trait Store {
         flags: &[String],
     ) -> Result<()>;
     fn messages(&self, account: &str) -> Result<Vec<StoredMessage>>;
+    /// The archived bytes of a message, checked against `sha256`. A missing or altered file is
+    /// `Error::Corrupt` (a problem of that one message), never `Error::Io`.
     fn read_eml(&self, sha256: &str) -> Result<Vec<u8>>;
     fn export_done(&self, target: &str, sha256: &str, folder: &str) -> Result<bool>;
     fn mark_exported(&mut self, target: &str, sha256: &str, folder: &str) -> Result<()>;

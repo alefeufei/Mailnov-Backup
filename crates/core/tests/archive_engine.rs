@@ -812,3 +812,81 @@ fn a_lone_poison_message_fails_only_itself_and_later_folders_still_run() {
     assert_eq!(last_uid(&store, "A"), 3);
     assert_eq!(last_uid(&store, "B"), 3);
 }
+
+// ---- backfill after the `since` filter changes (I4, with I3) ----
+
+#[test]
+fn clearing_since_after_a_failed_uid_backfills_only_missing_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    let mut src = FakeSource::new();
+    src.add_folder("INBOX", 7);
+    for i in 1..=10u32 {
+        // 1..=3 are older than the filter
+        src.add_message_dated(
+            "INBOX",
+            i,
+            eml(i),
+            &[],
+            Some(if i <= 3 { 100 } else { 1_000 }),
+        );
+    }
+    src.fail_uids.insert(6);
+    let with_since = ArchiveOptions {
+        account: ACC.into(),
+        folders: None,
+        since: Some(500),
+        batch_size: 4,
+    };
+    let s = run(&mut src, &mut store, &with_since).0.unwrap();
+    assert_eq!((s.added, s.failed), (6, 1));
+    assert_eq!(last_uid(&store, "INBOX"), 5);
+
+    // `profile edit --clear-since` resets the listing position, keeping UIDVALIDITY
+    store.reset_last_uid(ACC).unwrap();
+    src.clear_failures();
+    src.fetched_uids.clear();
+    let s = run(&mut src, &mut store, &opts(4)).0.unwrap();
+    assert_eq!(src.fetched_uids, vec![1, 2, 3, 6]);
+    assert_eq!((s.added, s.failed), (4, 0));
+    assert_eq!(
+        store.folder_state(ACC, "INBOX").unwrap(),
+        Some(StoredFolder {
+            uidvalidity: 7,
+            last_uid: 10
+        })
+    );
+    assert_eq!(store.messages(ACC).unwrap().len(), 10);
+}
+
+// ---- reindex keeps exact folder names (I7) ----
+
+#[test]
+fn reindex_then_archive_creates_no_phantom_folders() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut src = FakeSource::new();
+    let names = ["INBOX", "Trabalho/Projetos 2024", "Álbum de Fotos", "a:b"];
+    for (i, f) in names.iter().enumerate() {
+        src.add_folder(f, 3);
+        src.add_message(f, 1, eml(i as u32 + 1), &[]);
+    }
+    {
+        let mut store = FsSqliteStore::open(dir.path()).unwrap();
+        run(&mut src, &mut store, &opts(50)).0.unwrap();
+    }
+    for f in ["index.db", "index.db-wal", "index.db-shm"] {
+        let _ = std::fs::remove_file(dir.path().join(f));
+    }
+    let mut store = FsSqliteStore::open(dir.path()).unwrap();
+    store.reindex().unwrap();
+    let s = run(&mut src, &mut store, &opts(50)).0.unwrap();
+    assert_eq!((s.added, s.duplicates, s.failed), (0, 4, 0));
+    let folders: std::collections::BTreeSet<String> = store
+        .messages(ACC)
+        .unwrap()
+        .into_iter()
+        .map(|m| m.folder)
+        .collect();
+    let want: std::collections::BTreeSet<String> = names.iter().map(|s| s.to_string()).collect();
+    assert_eq!(folders, want);
+}

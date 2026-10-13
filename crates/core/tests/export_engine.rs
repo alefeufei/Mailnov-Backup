@@ -547,3 +547,54 @@ fn eml_target_id_is_stable_and_names_the_directory() {
     let other = tempfile::tempdir().unwrap();
     assert_ne!(a, EmlDirTarget::new(other.path()).id());
 }
+
+fn eml_file(root: &Path, sha: &str) -> std::path::PathBuf {
+    root.join(mailbackup_core::store::paths::eml_relpath(
+        ACC, "INBOX", sha,
+    ))
+}
+
+#[test]
+fn missing_local_files_fail_their_messages_but_never_abort_the_export() {
+    let (d, mut store) = inbox_store(6, None);
+    let msgs = store.messages(ACC).unwrap();
+    // the first four .eml files are gone (more than the abort streak)
+    for m in msgs.iter().take(4) {
+        std::fs::remove_file(eml_file(d.path(), &m.sha256)).unwrap();
+    }
+    let mut t = FakeTarget::default();
+    let (r, events) = run(&mut store, &mut t);
+    let s = r.unwrap();
+    assert_eq!((s.added, s.failed), (2, 4));
+    assert_eq!(t.puts.len(), 2);
+    let reasons: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::MessageFailed { reason, .. } => Some(reason.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reasons.len(), 4);
+    assert!(reasons[0].contains(&msgs[0].sha256), "{reasons:?}");
+}
+
+#[test]
+fn a_tampered_local_file_is_never_sent() {
+    let (d, mut store) = inbox_store(3, None);
+    let msgs = store.messages(ACC).unwrap();
+    let path = eml_file(d.path(), &msgs[1].sha256);
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes[3] ^= 0x20;
+    std::fs::write(&path, &bytes).unwrap();
+    let mut t = FakeTarget::default();
+    let (r, events) = run(&mut store, &mut t);
+    let s = r.unwrap();
+    assert_eq!((s.added, s.failed), (2, 1));
+    assert!(t.puts.iter().all(|p| p.bytes != bytes));
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Event::MessageFailed { reason, .. } if reason.contains("corrupt"))));
+    // not marked exported: retried (and failed again) next time
+    let (r, _) = run(&mut store, &mut t);
+    assert_eq!(r.unwrap().failed, 1);
+}

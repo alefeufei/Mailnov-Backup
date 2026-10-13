@@ -1,4 +1,4 @@
-use super::paths::eml_relpath;
+use super::paths::{eml_relpath, safe_component};
 use super::*;
 use crate::{sha256_hex, Error, RawMessage};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -82,6 +82,34 @@ fn account_id(tx: &Transaction, name: &str) -> Result<i64> {
     )
 }
 
+/// Files holding the exact account / folder name next to the (possibly lossy, see
+/// `safe_component`) directory names, so `reindex` can recover the real names.
+const ACCOUNT_SIDECAR: &str = ".account";
+const FOLDER_SIDECAR: &str = ".folder";
+
+/// Write `name` (UTF-8) to `dir/file` atomically, unless that file already exists.
+fn ensure_sidecar(dir: &Path, file: &str, name: &str) -> Result<()> {
+    let path = dir.join(file);
+    if path.is_file() {
+        return Ok(());
+    }
+    fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!("{file}.tmp"));
+    {
+        let mut f = File::create(&tmp)?;
+        f.write_all(name.as_bytes())?;
+        f.sync_all()?;
+    }
+    fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+/// The name stored in a sidecar, if there is a readable, non-empty UTF-8 one.
+fn read_sidecar(dir: &Path, file: &str) -> Option<String> {
+    let bytes = fs::read(dir.join(file)).ok()?;
+    String::from_utf8(bytes).ok().filter(|s| !s.is_empty())
+}
+
 /// Write `bytes` to `full` atomically (tmp + fsync + rename); reuse an identical file already there.
 fn write_eml(full: &Path, sha: &str, bytes: &[u8]) -> Result<()> {
     if let Ok(existing) = fs::read(full) {
@@ -154,6 +182,19 @@ impl FsSqliteStore {
         Ok(self
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))?)
+    }
+
+    /// Forget how far every folder of `account` was listed (`last_uid = 0`), keeping each
+    /// folder's UIDVALIDITY and every message/location. The next `archive` lists each folder
+    /// from the start again and downloads only the UIDs it does not have (used when the
+    /// profile's `since` filter changes, so older mail is backfilled).
+    pub fn reset_last_uid(&mut self, account: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE folder SET last_uid = 0
+             WHERE account_id = (SELECT id FROM account WHERE name = ?1)",
+            [account],
+        )?;
+        Ok(())
     }
 
     /// Arm a one-shot failure for the next `commit_batch`.
@@ -241,6 +282,10 @@ impl Store for FsSqliteStore {
                 }
                 None => {
                     let rel = eml_relpath(account, folder, &sha);
+                    let account_dir = root.join("mail").join(safe_component(account));
+                    ensure_sidecar(&account_dir, ACCOUNT_SIDECAR, account)?;
+                    let folder_dir = account_dir.join(safe_component(folder));
+                    ensure_sidecar(&folder_dir, FOLDER_SIDECAR, folder)?;
                     write_eml(&root.join(&rel), &sha, &m.bytes)?;
                     let meta = parse_meta(&m.bytes);
                     tx.execute(
@@ -365,7 +410,25 @@ impl Store for FsSqliteStore {
             )
             .optional()?;
         let rel = rel.ok_or_else(|| Error::Db(format!("unknown message {sha256}")))?;
-        Ok(fs::read(self.root.join(rel))?)
+        let full = self.root.join(rel);
+        // A missing or altered file is a problem of this one message, not of the disk.
+        let bytes = match fs::read(&full) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Error::Corrupt(format!(
+                    "message {sha256}: file '{}' is missing (see `verify`)",
+                    full.display()
+                )))
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if sha256_hex(&bytes) != sha256 {
+            return Err(Error::Corrupt(format!(
+                "message {sha256}: file '{}' does not match its SHA-256 (see `verify`)",
+                full.display()
+            )));
+        }
+        Ok(bytes)
     }
 
     fn export_done(&self, target: &str, sha256: &str, folder: &str) -> Result<bool> {
@@ -429,12 +492,16 @@ impl Store for FsSqliteStore {
                 .to_string()
         };
         for acc in subdirs(&mail)? {
+            // Exact names from the sidecars; archives written before them fall back to the
+            // (possibly sanitized) directory name.
+            let acc_name = read_sidecar(&acc, ACCOUNT_SIDECAR).unwrap_or_else(|| name(&acc));
             for fol in subdirs(&acc)? {
+                let fol_name = read_sidecar(&fol, FOLDER_SIDECAR).unwrap_or_else(|| name(&fol));
                 for pre in subdirs(&fol)? {
                     for e in fs::read_dir(&pre)? {
                         let p = e?.path();
                         if p.extension().is_some_and(|x| x == "eml") {
-                            files.push((name(&acc), name(&fol), p));
+                            files.push((acc_name.clone(), fol_name.clone(), p));
                         }
                     }
                 }
